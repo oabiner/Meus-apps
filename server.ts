@@ -5,6 +5,9 @@ import Database from "better-sqlite3";
 import { v4 as uuidv4 } from "uuid";
 import path from "path";
 import { fileURLToPath } from "url";
+import { db as firestoreDb, auth as firestoreAuth } from "./firebase.ts";
+import { collection, getDocs, doc, setDoc, deleteDoc } from "firebase/firestore";
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged } from "firebase/auth";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -55,15 +58,9 @@ db.exec(`
     quantity INTEGER,
     status TEXT,
     is_read INTEGER DEFAULT 0,
-    timestamp TEXT,
-    observation TEXT
+    observation TEXT,
+    timestamp TEXT
   );
-
-  try {
-    db.prepare("ALTER TABLE orders ADD COLUMN observation TEXT").run();
-  } catch (e) {
-    // Column might already exist
-  }
 
   CREATE TABLE IF NOT EXISTS history (
     id TEXT PRIMARY KEY,
@@ -148,7 +145,187 @@ if (groupsCount.count === 0) {
   }
 }
 
+async function authenticateServer() {
+  const email = "server@deckserrinha.com";
+  // Use a deterministic password based on the database or a hardcoded one for this applet
+  const password = "ServerPassword123!";
+  
+  return new Promise<void>((resolve, reject) => {
+    const unsubscribe = onAuthStateChanged(firestoreAuth, (user) => {
+      if (user) {
+        console.log("Server authenticated with Firestore successfully.");
+        unsubscribe();
+        resolve();
+      }
+    });
+
+    signInWithEmailAndPassword(firestoreAuth, email, password)
+      .then(async (userCredential) => {
+        // Ensure server user exists in Firestore users collection
+        try {
+          await setDoc(doc(firestoreDb, "users", userCredential.user.uid), {
+            username: "server",
+            email: email,
+            role: "host"
+          }, { merge: true });
+        } catch (e) {
+          console.error("Failed to ensure server user in Firestore:", e);
+        }
+      })
+      .catch((error: any) => {
+        if (error.code === 'auth/user-not-found' || error.code === 'auth/invalid-credential') {
+          createUserWithEmailAndPassword(firestoreAuth, email, password)
+            .then(async (userCredential) => {
+              try {
+                await setDoc(doc(firestoreDb, "users", userCredential.user.uid), {
+                  username: "server",
+                  email: email,
+                  role: "host"
+                }, { merge: true });
+              } catch (e) {
+                console.error("Failed to ensure server user in Firestore:", e);
+              }
+            })
+            .catch((createError) => {
+              console.error("Failed to create server user:", createError);
+              unsubscribe();
+              reject(createError);
+            });
+        } else {
+          console.error("Failed to authenticate server:", error);
+          unsubscribe();
+          reject(error);
+        }
+      });
+  });
+}
+
+async function loadFromFirestore() {
+  try {
+    await authenticateServer();
+    console.log("Loading data from Firestore...");
+    const menuSnapshot = await getDocs(collection(firestoreDb, "menu_items")).catch(e => handleFirestoreError(e, OperationType.GET, "menu_items"));
+    if (menuSnapshot && !menuSnapshot.empty) {
+      db.prepare("DELETE FROM menu_items").run();
+      const insertMenu = db.prepare("INSERT INTO menu_items (id, name, price, type, category, active) VALUES (?, ?, ?, ?, ?, ?)");
+      menuSnapshot.forEach(doc => {
+        const data = doc.data();
+        insertMenu.run(doc.id, data.name, data.price, data.type, data.category, data.active);
+      });
+    } else if (menuSnapshot) {
+      // Sync SQLite to Firestore
+      console.log("Firestore menu_items is empty. Syncing from SQLite...");
+      const menuItems = db.prepare("SELECT * FROM menu_items").all() as any[];
+      for (const item of menuItems) {
+        await setDoc(doc(firestoreDb, "menu_items", item.id), {
+          name: item.name,
+          price: item.price,
+          type: item.type ?? null,
+          category: item.category ?? null,
+          active: item.active ?? 1
+        }).catch(e => handleFirestoreError(e, OperationType.CREATE, "menu_items"));
+      }
+    }
+
+    const catSnapshot = await getDocs(collection(firestoreDb, "categories")).catch(e => handleFirestoreError(e, OperationType.GET, "categories"));
+    if (catSnapshot && !catSnapshot.empty) {
+      db.prepare("DELETE FROM categories").run();
+      const insertCat = db.prepare("INSERT INTO categories (id, name) VALUES (?, ?)");
+      catSnapshot.forEach(doc => {
+        const data = doc.data();
+        insertCat.run(doc.id, data.name);
+      });
+    } else if (catSnapshot) {
+      console.log("Firestore categories is empty. Syncing from SQLite...");
+      const categories = db.prepare("SELECT * FROM categories").all() as any[];
+      for (const cat of categories) {
+        await setDoc(doc(firestoreDb, "categories", cat.id), { name: cat.name }).catch(e => handleFirestoreError(e, OperationType.CREATE, "categories"));
+      }
+    }
+
+    const groupSnapshot = await getDocs(collection(firestoreDb, "item_groups")).catch(e => handleFirestoreError(e, OperationType.GET, "item_groups"));
+    if (groupSnapshot && !groupSnapshot.empty) {
+      db.prepare("DELETE FROM item_groups").run();
+      const insertGroup = db.prepare("INSERT INTO item_groups (id, name) VALUES (?, ?)");
+      groupSnapshot.forEach(doc => {
+        const data = doc.data();
+        insertGroup.run(doc.id, data.name);
+      });
+    } else if (groupSnapshot) {
+      console.log("Firestore item_groups is empty. Syncing from SQLite...");
+      const groups = db.prepare("SELECT * FROM item_groups").all() as any[];
+      for (const group of groups) {
+        await setDoc(doc(firestoreDb, "item_groups", group.id), { name: group.name }).catch(e => handleFirestoreError(e, OperationType.CREATE, "item_groups"));
+      }
+    }
+    console.log("Data loaded/synced from Firestore successfully.");
+  } catch (error) {
+    console.error("Error loading data from Firestore:", error);
+  }
+}
+
+const OperationType = {
+  CREATE: 'create',
+  UPDATE: 'update',
+  DELETE: 'delete',
+  LIST: 'list',
+  GET: 'get',
+  WRITE: 'write',
+} as const;
+
+type OperationType = typeof OperationType[keyof typeof OperationType];
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId: string | undefined;
+    email: string | null | undefined;
+    emailVerified: boolean | undefined;
+    isAnonymous: boolean | undefined;
+    tenantId: string | null | undefined;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const currentUser = firestoreAuth.currentUser;
+  if (!currentUser) {
+    // Silently skip Firestore errors when the server is not authenticated
+    // to prevent spamming the console if the user hasn't enabled Email/Password auth.
+    return;
+  }
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: currentUser?.uid,
+      email: currentUser?.email,
+      emailVerified: currentUser?.emailVerified,
+      isAnonymous: currentUser?.isAnonymous,
+      tenantId: currentUser?.tenantId,
+      providerInfo: currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
 async function startServer() {
+  await loadFromFirestore();
+
   const app = express();
   const PORT = 3000;
 
@@ -160,6 +337,13 @@ async function startServer() {
     db.prepare("ALTER TABLE history ADD COLUMN is_read INTEGER DEFAULT 0").run();
   } catch (e) {
     // Column already exists or table doesn't exist yet
+  }
+
+  // Add observation column to orders if it doesn't exist
+  try {
+    db.prepare("ALTER TABLE orders ADD COLUMN observation TEXT").run();
+  } catch (e) {
+    // Column already exists
   }
 
   const server = app.listen(PORT, "0.0.0.0", () => {
@@ -218,7 +402,7 @@ async function startServer() {
     const groups = db.prepare("SELECT * FROM item_groups").all();
     ws.send(JSON.stringify({ type: "GROUPS_UPDATE", payload: groups }));
 
-    ws.on("message", (message) => {
+    ws.on("message", async (message) => {
       try {
         const data = JSON.parse(message.toString());
         
@@ -296,8 +480,8 @@ async function startServer() {
             data.payload.items.forEach((item: any) => {
               const orderId = uuidv4();
               const timestamp = new Date().toISOString();
-              db.prepare("INSERT INTO orders (id, table_id, menu_item_id, quantity, status, is_read, timestamp, observation) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-                .run(orderId, data.payload.tableId, item.menuItemId, item.quantity, 'pending', 0, timestamp, item.observation || null);
+              db.prepare("INSERT INTO orders (id, table_id, menu_item_id, quantity, status, is_read, observation, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+                .run(orderId, data.payload.tableId, item.menuItemId, item.quantity, 'pending', 0, item.observation || null, timestamp);
               
               const menuItem = db.prepare("SELECT name, price FROM menu_items WHERE id = ?").get(item.menuItemId) as any;
               
@@ -308,17 +492,18 @@ async function startServer() {
                 quantity: item.quantity,
                 status: 'pending',
                 is_read: 0,
-                timestamp: timestamp,
                 observation: item.observation || null,
+                timestamp: timestamp,
                 item_name: menuItem.name,
                 item_price: menuItem.price
               });
 
+              const obsText = item.observation ? ` (Obs: ${item.observation})` : '';
               logHistory(
                 data.payload.userId, 
                 data.payload.username, 
                 "NOVO_PEDIDO", 
-                `Mesa ${data.payload.tableId}: ${item.quantity}x ${menuItem.name}${item.observation ? ` (Obs: ${item.observation})` : ''}`,
+                `Mesa ${data.payload.tableId}: ${item.quantity}x ${menuItem.name}${obsText}`,
                 orderId
               );
             });
@@ -333,11 +518,12 @@ async function startServer() {
               
               db.prepare("DELETE FROM orders WHERE id = ?").run(data.payload.orderId);
               
+              const obsText = orderToDelete.observation ? ` (Obs: ${orderToDelete.observation})` : '';
               logHistory(
                 data.payload.userId,
                 data.payload.username,
                 "EXCLUIR_PEDIDO",
-                `Mesa ${data.payload.tableId}: ${orderToDelete.quantity}x ${menuItem ? menuItem.name : 'Item'} excluído`,
+                `Mesa ${data.payload.tableId}: ${orderToDelete.quantity}x ${menuItem ? menuItem.name : 'Item'}${obsText} excluído`,
                 data.payload.orderId
               );
 
@@ -346,25 +532,22 @@ async function startServer() {
             }
             break;
 
+          case "HISTORY_MARK_READ":
+            const historyEvent = db.prepare("SELECT is_read FROM history WHERE id = ?").get(data.payload.historyId) as any;
+            if (historyEvent) {
+              const newHistoryStatus = historyEvent.is_read === 1 ? 0 : 1;
+              db.prepare("UPDATE history SET is_read = ? WHERE id = ?").run(newHistoryStatus, data.payload.historyId);
+              const updatedHistoryList = db.prepare("SELECT * FROM history ORDER BY timestamp DESC LIMIT 100").all();
+              broadcast({ type: "HISTORY_UPDATE", payload: updatedHistoryList });
+            }
+            break;
+
           case "ORDER_MARK_READ":
             const currentOrder = db.prepare("SELECT is_read FROM orders WHERE id = ?").get(data.payload.orderId) as any;
-            // If order exists, toggle its status. If not (deleted), check history status or default to 1 (read)
-            let newStatus = 1;
-            
             if (currentOrder) {
-              newStatus = currentOrder.is_read === 1 ? 0 : 1;
+              const newStatus = currentOrder.is_read === 1 ? 0 : 1;
               db.prepare("UPDATE orders SET is_read = ? WHERE id = ?").run(newStatus, data.payload.orderId);
-            } else {
-              // Order might be deleted, check history to toggle
-              const historyItem = db.prepare("SELECT is_read FROM history WHERE order_id = ? ORDER BY timestamp DESC LIMIT 1").get(data.payload.orderId) as any;
-              if (historyItem) {
-                newStatus = historyItem.is_read === 1 ? 0 : 1;
-              }
-            }
-
-            db.prepare("UPDATE history SET is_read = ? WHERE order_id = ?").run(newStatus, data.payload.orderId);
-            
-            if (currentOrder) {
+              
               const updatedOrder = db.prepare(`
                 SELECT o.*, m.name as item_name, m.price as item_price 
                 FROM orders o 
@@ -373,21 +556,26 @@ async function startServer() {
               `).get(data.payload.orderId);
               broadcast({ type: "ORDER_UPDATE", payload: updatedOrder });
             }
-            
-            const updatedHistory = db.prepare("SELECT * FROM history ORDER BY timestamp DESC LIMIT 100").all();
-            broadcast({ type: "HISTORY_UPDATE", payload: updatedHistory });
             break;
 
           case "MENU_ADD":
             const newItemId = uuidv4();
             db.prepare("INSERT INTO menu_items (id, name, price, type, category, active) VALUES (?, ?, ?, ?, ?, ?)")
               .run(newItemId, data.payload.name, data.payload.price, data.payload.type, data.payload.category, data.payload.active ? 1 : 0);
+            await setDoc(doc(firestoreDb, "menu_items", newItemId), {
+              name: data.payload.name,
+              price: data.payload.price,
+              type: data.payload.type ?? null,
+              category: data.payload.category ?? null,
+              active: data.payload.active ? 1 : 0
+            }).catch(e => handleFirestoreError(e, OperationType.CREATE, "menu_items"));
             const newMenu = db.prepare("SELECT * FROM menu_items").all();
             broadcast({ type: "MENU_UPDATE", payload: newMenu });
             break;
 
           case "MENU_DELETE":
             db.prepare("DELETE FROM menu_items WHERE id = ?").run(data.payload.id);
+            await deleteDoc(doc(firestoreDb, "menu_items", data.payload.id)).catch(e => handleFirestoreError(e, OperationType.DELETE, "menu_items"));
             const updatedMenu = db.prepare("SELECT * FROM menu_items").all();
             broadcast({ type: "MENU_UPDATE", payload: updatedMenu });
             break;
@@ -395,12 +583,21 @@ async function startServer() {
           case "MENU_EDIT":
             db.prepare("UPDATE menu_items SET name = ?, price = ?, type = ?, category = ?, active = ? WHERE id = ?")
               .run(data.payload.name, data.payload.price, data.payload.type, data.payload.category, data.payload.active ? 1 : 0, data.payload.id);
+            await setDoc(doc(firestoreDb, "menu_items", data.payload.id), {
+              name: data.payload.name,
+              price: data.payload.price,
+              type: data.payload.type ?? null,
+              category: data.payload.category ?? null,
+              active: data.payload.active ? 1 : 0
+            }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "menu_items"));
             const editedMenu = db.prepare("SELECT * FROM menu_items").all();
             broadcast({ type: "MENU_UPDATE", payload: editedMenu });
             break;
 
           case "CATEGORY_ADD":
-            db.prepare("INSERT INTO categories (id, name) VALUES (?, ?)").run(uuidv4(), data.payload.name);
+            const newCatId = uuidv4();
+            db.prepare("INSERT INTO categories (id, name) VALUES (?, ?)").run(newCatId, data.payload.name);
+            await setDoc(doc(firestoreDb, "categories", newCatId), { name: data.payload.name }).catch(e => handleFirestoreError(e, OperationType.CREATE, "categories"));
             broadcast({ type: "CATEGORIES_UPDATE", payload: db.prepare("SELECT * FROM categories").all() });
             break;
 
@@ -408,9 +605,14 @@ async function startServer() {
             const oldCat = db.prepare("SELECT name FROM categories WHERE id = ?").get(data.payload.id) as { name: string };
             if (oldCat && oldCat.name !== data.payload.name) {
               db.prepare("UPDATE menu_items SET type = ? WHERE type = ?").run(data.payload.name, oldCat.name);
+              const updatedItems = db.prepare("SELECT * FROM menu_items WHERE type = ?").all(data.payload.name) as any[];
+              for (const item of updatedItems) {
+                await setDoc(doc(firestoreDb, "menu_items", item.id), { type: data.payload.name }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "menu_items"));
+              }
               broadcast({ type: "MENU_UPDATE", payload: db.prepare("SELECT * FROM menu_items").all() });
             }
             db.prepare("UPDATE categories SET name = ? WHERE id = ?").run(data.payload.name, data.payload.id);
+            await setDoc(doc(firestoreDb, "categories", data.payload.id), { name: data.payload.name }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "categories"));
             broadcast({ type: "CATEGORIES_UPDATE", payload: db.prepare("SELECT * FROM categories").all() });
             break;
           }
@@ -419,15 +621,22 @@ async function startServer() {
             const oldCat = db.prepare("SELECT name FROM categories WHERE id = ?").get(data.payload.id) as { name: string };
             if (oldCat) {
               db.prepare("UPDATE menu_items SET type = NULL WHERE type = ?").run(oldCat.name);
+              const updatedItems = db.prepare("SELECT * FROM menu_items WHERE type IS NULL").all() as any[];
+              for (const item of updatedItems) {
+                await setDoc(doc(firestoreDb, "menu_items", item.id), { type: null }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "menu_items"));
+              }
               broadcast({ type: "MENU_UPDATE", payload: db.prepare("SELECT * FROM menu_items").all() });
             }
             db.prepare("DELETE FROM categories WHERE id = ?").run(data.payload.id);
+            await deleteDoc(doc(firestoreDb, "categories", data.payload.id)).catch(e => handleFirestoreError(e, OperationType.DELETE, "categories"));
             broadcast({ type: "CATEGORIES_UPDATE", payload: db.prepare("SELECT * FROM categories").all() });
             break;
           }
 
           case "GROUP_ADD":
-            db.prepare("INSERT INTO item_groups (id, name) VALUES (?, ?)").run(uuidv4(), data.payload.name);
+            const newGroupId = uuidv4();
+            db.prepare("INSERT INTO item_groups (id, name) VALUES (?, ?)").run(newGroupId, data.payload.name);
+            await setDoc(doc(firestoreDb, "item_groups", newGroupId), { name: data.payload.name }).catch(e => handleFirestoreError(e, OperationType.CREATE, "item_groups"));
             broadcast({ type: "GROUPS_UPDATE", payload: db.prepare("SELECT * FROM item_groups").all() });
             break;
 
@@ -435,9 +644,14 @@ async function startServer() {
             const oldGroup = db.prepare("SELECT name FROM item_groups WHERE id = ?").get(data.payload.id) as { name: string };
             if (oldGroup && oldGroup.name !== data.payload.name) {
               db.prepare("UPDATE menu_items SET category = ? WHERE category = ?").run(data.payload.name, oldGroup.name);
+              const updatedItems = db.prepare("SELECT * FROM menu_items WHERE category = ?").all(data.payload.name) as any[];
+              for (const item of updatedItems) {
+                await setDoc(doc(firestoreDb, "menu_items", item.id), { category: data.payload.name }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "menu_items"));
+              }
               broadcast({ type: "MENU_UPDATE", payload: db.prepare("SELECT * FROM menu_items").all() });
             }
             db.prepare("UPDATE item_groups SET name = ? WHERE id = ?").run(data.payload.name, data.payload.id);
+            await setDoc(doc(firestoreDb, "item_groups", data.payload.id), { name: data.payload.name }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "item_groups"));
             broadcast({ type: "GROUPS_UPDATE", payload: db.prepare("SELECT * FROM item_groups").all() });
             break;
           }
@@ -446,9 +660,14 @@ async function startServer() {
             const oldGroup = db.prepare("SELECT name FROM item_groups WHERE id = ?").get(data.payload.id) as { name: string };
             if (oldGroup) {
               db.prepare("UPDATE menu_items SET category = NULL WHERE category = ?").run(oldGroup.name);
+              const updatedItems = db.prepare("SELECT * FROM menu_items WHERE category IS NULL").all() as any[];
+              for (const item of updatedItems) {
+                await setDoc(doc(firestoreDb, "menu_items", item.id), { category: null }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "menu_items"));
+              }
               broadcast({ type: "MENU_UPDATE", payload: db.prepare("SELECT * FROM menu_items").all() });
             }
             db.prepare("DELETE FROM item_groups WHERE id = ?").run(data.payload.id);
+            await deleteDoc(doc(firestoreDb, "item_groups", data.payload.id)).catch(e => handleFirestoreError(e, OperationType.DELETE, "item_groups"));
             broadcast({ type: "GROUPS_UPDATE", payload: db.prepare("SELECT * FROM item_groups").all() });
             break;
           }
@@ -538,6 +757,10 @@ async function startServer() {
       return res.status(403).json({ success: false, message: "Sem permissão" });
     }
 
+    if (targetUser && targetUser.username === 'deckserrinha') {
+      return res.status(403).json({ success: false, message: "O host inicial não pode ser excluído" });
+    }
+
     if (targetUser && targetUser.role === 'host' && requestingUser.role !== 'host') {
       return res.status(403).json({ success: false, message: "Admin não pode excluir Host" });
     }
@@ -577,6 +800,10 @@ async function startServer() {
     }
 
     const { username, password, role } = req.body;
+
+    if (targetUser && targetUser.username === 'deckserrinha' && role !== 'host') {
+      return res.status(403).json({ success: false, message: "O host inicial não pode ser removido do cargo" });
+    }
 
     // Only Host can change roles to/from Host
     if (role === 'host' && !isHost) {
@@ -622,28 +849,86 @@ async function startServer() {
   // Menu Export/Import
   app.get("/api/menu/export", (req, res) => {
     const menu = db.prepare("SELECT * FROM menu_items").all();
+    const categories = db.prepare("SELECT * FROM categories").all();
+    const itemGroups = db.prepare("SELECT * FROM item_groups").all();
+    
+    const exportData = {
+      menu_items: menu,
+      categories: categories,
+      item_groups: itemGroups
+    };
+
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition', 'attachment; filename=cardapio.json');
-    res.send(JSON.stringify(menu, null, 2));
+    res.send(JSON.stringify(exportData, null, 2));
   });
 
-  app.post("/api/menu/import", (req, res) => {
-    const menuItems = req.body;
-    if (!Array.isArray(menuItems)) {
+  app.post("/api/menu/import", async (req, res) => {
+    const data = req.body;
+    
+    let menuItems: any[] = [];
+    let categories: any[] = [];
+    let itemGroups: any[] = [];
+
+    if (Array.isArray(data)) {
+      menuItems = data;
+    } else if (data && typeof data === 'object') {
+      menuItems = Array.isArray(data.menu_items) ? data.menu_items : [];
+      categories = Array.isArray(data.categories) ? data.categories : [];
+      itemGroups = Array.isArray(data.item_groups) ? data.item_groups : [];
+    } else {
       return res.status(400).json({ success: false, message: "Formato inválido" });
     }
 
     try {
-      const insert = db.prepare("INSERT OR REPLACE INTO menu_items (id, name, price, type, category, active) VALUES (?, ?, ?, ?, ?, ?)");
-      const transaction = db.transaction((items) => {
-        for (const item of items) {
-          insert.run(item.id || uuidv4(), item.name, item.price, item.type, item.category, item.active !== undefined ? item.active : 1);
+      const transaction = db.transaction(() => {
+        if (categories.length > 0) {
+          const insertCat = db.prepare("INSERT OR REPLACE INTO categories (id, name) VALUES (?, ?)");
+          for (const cat of categories) {
+            const id = cat.id || uuidv4();
+            insertCat.run(id, cat.name);
+            setDoc(doc(firestoreDb, "categories", id), { name: cat.name }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "categories"));
+          }
+        }
+
+        if (itemGroups.length > 0) {
+          const insertGroup = db.prepare("INSERT OR REPLACE INTO item_groups (id, name) VALUES (?, ?)");
+          for (const group of itemGroups) {
+            const id = group.id || uuidv4();
+            insertGroup.run(id, group.name);
+            setDoc(doc(firestoreDb, "item_groups", id), { name: group.name }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "item_groups"));
+          }
+        }
+
+        if (menuItems.length > 0) {
+          const insertMenu = db.prepare("INSERT OR REPLACE INTO menu_items (id, name, price, type, category, active) VALUES (?, ?, ?, ?, ?, ?)");
+          for (const item of menuItems) {
+            const id = item.id || uuidv4();
+            const active = item.active !== undefined ? item.active : 1;
+            insertMenu.run(id, item.name, item.price, item.type, item.category, active);
+            setDoc(doc(firestoreDb, "menu_items", id), {
+              name: item.name,
+              price: item.price,
+              type: item.type ?? null,
+              category: item.category ?? null,
+              active: active
+            }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "menu_items"));
+          }
         }
       });
-      transaction(menuItems);
       
-      const updatedMenu = db.prepare("SELECT * FROM menu_items").all();
-      broadcast({ type: "MENU_UPDATE", payload: updatedMenu });
+      transaction();
+      
+      if (categories.length > 0) {
+        broadcast({ type: "CATEGORIES_UPDATE", payload: db.prepare("SELECT * FROM categories").all() });
+      }
+      if (itemGroups.length > 0) {
+        broadcast({ type: "ITEM_GROUPS_UPDATE", payload: db.prepare("SELECT * FROM item_groups").all() });
+      }
+      if (menuItems.length > 0) {
+        broadcast({ type: "MENU_UPDATE", payload: db.prepare("SELECT * FROM menu_items").all() });
+      }
+      
       res.json({ success: true });
     } catch (e) {
       console.error("Import error:", e);

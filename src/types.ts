@@ -35,6 +35,7 @@ export interface OrderItem {
   quantity: number;
   status: 'pending' | 'delivered';
   is_read: number; // 0 or 1
+  observation?: string;
   timestamp: string;
   item_name?: string;
   item_price?: number;

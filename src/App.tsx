@@ -478,8 +478,8 @@ export default function App() {
             <HistoryTab 
               events={historyEvents} 
               isHost={user?.role === 'host'}
-              onMarkRead={(orderId: string) => {
-                sendWS('ORDER_MARK_READ', { orderId, userId: user?.id, username: user?.username });
+              onMarkRead={(historyId: string) => {
+                sendWS('HISTORY_MARK_READ', { historyId, userId: user?.id, username: user?.username });
               }}
             />
           )}
@@ -815,7 +815,7 @@ function TableActionsModal({ isOpen, onClose, table, orders, isHost, onOpenTable
                 ) : (
                   <div className="divide-y divide-zinc-50 dark:divide-zinc-800">
                     {orders.map((order: any) => (
-                      <div key={order.id} className="flex flex-col p-3 text-sm border-b border-zinc-50 dark:border-zinc-800 last:border-0">
+                      <div key={order.id} className="flex flex-col p-3 text-sm">
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-3">
                             <span className="dark:text-zinc-200">
@@ -834,7 +834,7 @@ function TableActionsModal({ isOpen, onClose, table, orders, isHost, onOpenTable
                           </div>
                         </div>
                         {order.observation && (
-                          <div className="text-xs text-zinc-500 dark:text-zinc-400 italic mt-1 pl-1">
+                          <div className="text-xs text-zinc-500 dark:text-zinc-400 italic mt-1">
                             Obs: {order.observation}
                           </div>
                         )}
@@ -908,6 +908,43 @@ function MenuTab({ menu, categories = [], groups = [], canEdit, onAdd, onEdit, o
     e.target.value = ''; // Reset input
   };
 
+  const renderItemCard = (item: any) => (
+    <div key={item.id} className={cn(
+      "group relative flex items-center justify-between border-b border-zinc-100 bg-white py-2 px-3 transition-colors hover:bg-zinc-50 dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50 last:border-0",
+      item.active === 0 && "opacity-60 bg-zinc-50 dark:bg-zinc-800/50"
+    )}>
+      <div className="flex items-center gap-3 flex-1">
+        <div className="flex-1">
+          <div className="flex items-center gap-2">
+            <h4 className="font-semibold text-sm text-zinc-900 dark:text-zinc-100">{item.name}</h4>
+            {item.active === 0 && <span className="rounded bg-zinc-200 px-1.5 py-0.5 text-[9px] font-bold text-zinc-600 dark:bg-zinc-700 dark:text-zinc-400">INATIVO</span>}
+          </div>
+          <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">{item.category} • R$ {item.price.toFixed(2)}</p>
+        </div>
+      </div>
+      {canEdit && (
+        <div className="flex gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+          <button onClick={() => onEdit(item)} className="rounded p-1.5 text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20">
+            <Edit2 className="h-3.5 w-3.5" />
+          </button>
+          <button onClick={() => {
+            setConfirmModal({
+              isOpen: true,
+              title: 'Excluir Item',
+              message: `Deseja realmente excluir ${item.name}?`,
+              onConfirm: () => {
+                onWS('MENU_DELETE', { id: item.id });
+                setConfirmModal({ ...confirmModal, isOpen: false });
+              }
+            });
+          }} className="rounded p-1.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20">
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div className="space-y-6">
       <ConfirmModal 
@@ -976,129 +1013,88 @@ function MenuTab({ menu, categories = [], groups = [], canEdit, onAdd, onEdit, o
       )}
 
       {search ? (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {filteredMenu.map((item: any) => (
-            <div key={item.id} className={cn(
-              "group relative flex items-center justify-between rounded-xl border border-zinc-200 bg-white p-4 shadow-sm transition-all hover:shadow-md dark:bg-zinc-900 dark:border-zinc-800",
-              item.active === 0 && "opacity-60 bg-zinc-50 border-dashed dark:bg-zinc-800/50"
-            )}>
-              <div>
-                <div className="flex items-center gap-2">
-                  <p className="text-xs font-bold uppercase tracking-widest text-emerald-600 dark:text-emerald-400">{item.category}</p>
-                  {item.active === 0 && <span className="rounded bg-zinc-200 px-1.5 py-0.5 text-[10px] font-bold text-zinc-600 dark:bg-zinc-700 dark:text-zinc-400">INATIVO</span>}
-                </div>
-                <h4 className="font-semibold text-zinc-900 dark:text-zinc-100">{item.name}</h4>
-                <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">R$ {item.price.toFixed(2)}</p>
-              </div>
-              {canEdit && (
-                <div className="flex gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-                  <button onClick={() => onEdit(item)} className="rounded-lg p-2 text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20">
-                    <Edit2 className="h-4 w-4" />
-                  </button>
-                  <button onClick={() => {
-                    setConfirmModal({
-                      isOpen: true,
-                      title: 'Excluir Item',
-                      message: `Deseja realmente excluir ${item.name}?`,
-                      onConfirm: () => onWS('MENU_DELETE', { id: item.id })
-                    });
-                  }} className="rounded-lg p-2 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20">
-                    <Trash2 className="h-4 w-4" />
-                  </button>
-                </div>
-              )}
-            </div>
-          ))}
+        <div className="rounded-xl border border-zinc-200 overflow-hidden dark:border-zinc-800">
+          {filteredMenu.map(renderItemCard)}
           {filteredMenu.length === 0 && (
-            <div className="col-span-full py-12 text-center text-zinc-500 dark:text-zinc-400">
+            <div className="py-12 text-center text-zinc-500 dark:text-zinc-400">
               Nenhum item encontrado para "{search}".
             </div>
           )}
         </div>
-      ) : !activeCategory ? (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-          {categories.map((c: any) => {
-            const count = menu.filter((m: any) => m.type === c.name).length;
-            if (count === 0) return null;
-            return (
-              <button 
-                key={c.id} 
-                onClick={() => setActiveCategory(c.name)}
-                className="flex flex-col items-center justify-center gap-1 rounded-xl border border-zinc-200 bg-white p-3 shadow-sm transition-all hover:border-emerald-500 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-emerald-500"
-              >
-                <span className="text-lg font-bold text-zinc-900 dark:text-zinc-100">{c.name}</span>
-                <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">{count} itens</span>
-              </button>
-            );
-          })}
-          {categories.filter((c: any) => menu.filter((m: any) => m.type === c.name).length > 0).length === 0 && (
-            <div className="col-span-full py-12 text-center text-zinc-500 dark:text-zinc-400">
-              Nenhuma categoria com itens cadastrados.
-            </div>
-          )}
-        </div>
-      ) : !activeGroup ? (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-          {groups.map((g: any) => {
-            const count = menu.filter((m: any) => m.type === activeCategory && m.category === g.name).length;
-            if (count === 0) return null;
-            return (
-              <button 
-                key={g.id} 
-                onClick={() => setActiveGroup(g.name)}
-                className="flex flex-col items-center justify-center gap-1 rounded-xl border border-zinc-200 bg-white p-3 shadow-sm transition-all hover:border-emerald-500 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-emerald-500"
-              >
-                <span className="text-lg font-bold text-zinc-900 dark:text-zinc-100">{g.name}</span>
-                <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">{count} itens</span>
-              </button>
-            );
-          })}
-          {groups.filter((g: any) => menu.filter((m: any) => m.type === activeCategory && m.category === g.name).length > 0).length === 0 && (
-            <div className="col-span-full py-12 text-center text-zinc-500 dark:text-zinc-400">
-              Nenhum grupo com itens cadastrados.
-            </div>
-          )}
-        </div>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {filteredMenu.map((item: any) => (
-            <div key={item.id} className={cn(
-              "group relative flex items-center justify-between rounded-xl border border-zinc-200 bg-white p-4 shadow-sm transition-all hover:shadow-md dark:bg-zinc-900 dark:border-zinc-800",
-              item.active === 0 && "opacity-60 bg-zinc-50 border-dashed dark:bg-zinc-800/50"
-            )}>
-              <div>
-                <div className="flex items-center gap-2">
-                  <p className="text-xs font-bold uppercase tracking-widest text-emerald-600 dark:text-emerald-400">{item.category}</p>
-                  {item.active === 0 && <span className="rounded bg-zinc-200 px-1.5 py-0.5 text-[10px] font-bold text-zinc-600 dark:bg-zinc-700 dark:text-zinc-400">INATIVO</span>}
-                </div>
-                <h4 className="font-semibold text-zinc-900 dark:text-zinc-100">{item.name}</h4>
-                <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">R$ {item.price.toFixed(2)}</p>
-              </div>
-              {canEdit && (
-                <div className="flex gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-                  <button onClick={() => onEdit(item)} className="rounded-lg p-2 text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20">
-                    <Edit2 className="h-4 w-4" />
+        <>
+          {!activeCategory ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+              {categories.map((c: any) => {
+                const count = menu.filter((m: any) => m.type === c.name).length;
+                if (count === 0) return null;
+                return (
+                  <button 
+                    key={c.id} 
+                    onClick={() => setActiveCategory(c.name)}
+                    className="flex flex-col items-center justify-center gap-1 rounded-xl border border-zinc-200 bg-white p-3 shadow-sm transition-all hover:border-emerald-500 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-emerald-500"
+                  >
+                    <span className="text-lg font-bold text-zinc-900 dark:text-zinc-100">{c.name}</span>
+                    <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">{count} itens</span>
                   </button>
-                  <button onClick={() => {
-                    setConfirmModal({
-                      isOpen: true,
-                      title: 'Excluir Item',
-                      message: `Deseja realmente excluir ${item.name}?`,
-                      onConfirm: () => onWS('MENU_DELETE', { id: item.id })
-                    });
-                  }} className="rounded-lg p-2 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20">
-                    <Trash2 className="h-4 w-4" />
-                  </button>
+                );
+              })}
+              {categories.filter((c: any) => menu.filter((m: any) => m.type === c.name).length > 0).length === 0 && (
+                <div className="col-span-full py-12 text-center text-zinc-500 dark:text-zinc-400">
+                  Nenhuma categoria com itens cadastrados.
                 </div>
               )}
             </div>
-          ))}
-          {filteredMenu.length === 0 && (
-            <div className="col-span-full py-12 text-center text-zinc-500 dark:text-zinc-400">
-              Nenhum item nesta categoria e grupo.
+          ) : !activeGroup ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+              {groups.map((g: any) => {
+                const count = menu.filter((m: any) => m.type === activeCategory && m.category === g.name).length;
+                if (count === 0) return null;
+                return (
+                  <button 
+                    key={g.id} 
+                    onClick={() => setActiveGroup(g.name)}
+                    className="flex flex-col items-center justify-center gap-1 rounded-xl border border-zinc-200 bg-white p-3 shadow-sm transition-all hover:border-emerald-500 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-emerald-500"
+                  >
+                    <span className="text-lg font-bold text-zinc-900 dark:text-zinc-100">{g.name}</span>
+                    <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">{count} itens</span>
+                  </button>
+                );
+              })}
+              {groups.filter((g: any) => menu.filter((m: any) => m.type === activeCategory && m.category === g.name).length > 0).length === 0 && (
+                <div className="col-span-full py-12 text-center text-zinc-500 dark:text-zinc-400">
+                  Nenhum grupo com itens cadastrados.
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-zinc-200 overflow-hidden dark:border-zinc-800">
+              {filteredMenu.map(renderItemCard)}
+              {filteredMenu.length === 0 && (
+                <div className="py-12 text-center text-zinc-500 dark:text-zinc-400">
+                  Nenhum item nesta categoria e grupo.
+                </div>
+              )}
             </div>
           )}
-        </div>
+
+          {(!activeCategory || !activeGroup) && (
+            <>
+              <div className="my-8 border-t border-zinc-200 dark:border-zinc-800" />
+              <div className="mb-4 flex items-center justify-between">
+                <h3 className="text-lg font-bold text-zinc-900 dark:text-zinc-100">Todos os Itens</h3>
+              </div>
+              <div className="rounded-xl border border-zinc-200 overflow-hidden dark:border-zinc-800">
+                {menu.map(renderItemCard)}
+                {menu.length === 0 && (
+                  <div className="py-12 text-center text-zinc-500 dark:text-zinc-400">
+                    Nenhum item cadastrado.
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </>
       )}
     </div>
   );
@@ -1377,7 +1373,7 @@ function ConfigTab({ users, settings, darkMode, setDarkMode, onRefreshUsers, onA
                             <Edit2 className="h-4 w-4" />
                           </button>
                         )}
-                        {u.role !== 'host' && (
+                        {(u.username !== 'deckserrinha' && (u.role !== 'host' || isHost)) && (
                           <button onClick={() => deleteUser(u.id)} className="text-rose-500 hover:text-rose-700">
                             <Trash2 className="h-4 w-4" />
                           </button>
@@ -1496,40 +1492,38 @@ function HistoryTab({ events, isHost, onMarkRead }: { events: any[]; isHost: boo
       </div>
 
       <div className="rounded-2xl border border-zinc-200 bg-white shadow-sm overflow-x-auto dark:bg-zinc-900 dark:border-zinc-800">
-        <table className="w-full text-left text-sm min-w-[600px]">
-          <thead className="bg-zinc-50 text-zinc-500 uppercase text-[10px] font-bold tracking-wider dark:bg-zinc-800 dark:text-zinc-400">
+        <table className="w-full text-left text-sm min-w-full sm:min-w-[600px]">
+          <thead className="bg-zinc-50 text-zinc-500 uppercase text-[10px] sm:text-xs font-bold tracking-wider dark:bg-zinc-800 dark:text-zinc-400">
             <tr>
-              {isHost && <th className="px-6 py-3 w-16">Visto</th>}
-              <th className="px-6 py-3">Detalhes</th>
-              <th className="px-6 py-3">Ação</th>
-              <th className="px-6 py-3">Usuário</th>
-              <th className="px-6 py-3">Horário</th>
+              {isHost && <th className="px-3 py-3 sm:px-6 sm:py-3 w-10 sm:w-16">Visto</th>}
+              <th className="px-3 py-3 sm:px-6 sm:py-3">Detalhes</th>
+              <th className="px-3 py-3 sm:px-6 sm:py-3">Ação</th>
+              <th className="px-3 py-3 sm:px-6 sm:py-3">Usuário</th>
+              <th className="hidden sm:table-cell px-3 py-3 sm:px-6 sm:py-3">Horário</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
             {filteredEvents.length === 0 ? (
               <tr>
-                <td colSpan={isHost ? 5 : 4} className="px-6 py-8 text-center text-zinc-400">Nenhuma movimentação encontrada</td>
+                <td colSpan={isHost ? 5 : 4} className="px-3 py-4 sm:px-6 sm:py-8 text-center text-zinc-400">Nenhuma movimentação encontrada</td>
               </tr>
             ) : (
               filteredEvents.map(event => (
                 <tr key={event.id} className={cn("hover:bg-zinc-50/50 dark:hover:bg-zinc-800/50", event.is_read === 1 && "opacity-50")}>
                   {isHost && (
-                    <td className="px-6 py-4">
-                      {event.order_id && (
-                        <input 
-                          type="checkbox" 
-                          checked={event.is_read === 1} 
-                          onChange={() => onMarkRead(event.order_id!)}
-                          className="h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500"
-                        />
-                      )}
+                    <td className="px-3 py-3 sm:px-6 sm:py-4">
+                      <input 
+                        type="checkbox" 
+                        checked={event.is_read === 1} 
+                        onChange={() => onMarkRead(event.id)}
+                        className="h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500"
+                      />
                     </td>
                   )}
-                  <td className="px-6 py-4 text-zinc-600 dark:text-zinc-400">{event.details}</td>
-                  <td className="px-6 py-4">
+                  <td className="px-3 py-3 sm:px-6 sm:py-4 text-zinc-600 dark:text-zinc-400 max-w-[150px] sm:max-w-none truncate sm:whitespace-normal">{event.details}</td>
+                  <td className="px-3 py-3 sm:px-6 sm:py-4">
                     <span className={cn(
-                      "rounded-full px-2 py-0.5 text-[10px] font-bold uppercase whitespace-nowrap",
+                      "rounded-full px-2 py-0.5 text-[10px] sm:text-xs font-bold uppercase whitespace-nowrap",
                       event.action === 'EXCLUIR_PEDIDO' ? "bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300" :
                       event.action === 'PEDIR_CONTA' ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300" :
                       event.action === 'FECHAR_MESA' ? "bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300" :
@@ -1540,8 +1534,11 @@ function HistoryTab({ events, isHost, onMarkRead }: { events: any[]; isHost: boo
                       {event.action.replace('_', ' ')}
                     </span>
                   </td>
-                  <td className="px-6 py-4 font-medium dark:text-zinc-200">{event.username}</td>
-                  <td className="px-6 py-4 text-zinc-400 dark:text-zinc-500">{format(new Date(event.timestamp), 'HH:mm:ss')}</td>
+                  <td className="px-3 py-3 sm:px-6 sm:py-4">
+                    <div className="font-medium dark:text-zinc-200 truncate max-w-[100px] sm:max-w-none">{event.username}</div>
+                    <div className="text-xs sm:hidden text-zinc-400 dark:text-zinc-500 mt-0.5">{format(new Date(event.timestamp), 'HH:mm:ss')}</div>
+                  </td>
+                  <td className="hidden sm:table-cell px-3 py-3 sm:px-6 sm:py-4 text-zinc-400 dark:text-zinc-500">{format(new Date(event.timestamp), 'HH:mm:ss')}</td>
                 </tr>
               ))
             )}
@@ -1639,7 +1636,7 @@ function EditUserModal({ isOpen, onClose, user, onSuccess, currentUser }: any) {
           <select 
             name="role" 
             defaultValue={user.role} 
-            disabled={user.role === 'host'}
+            disabled={user.username === 'deckserrinha'}
             className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <option value="waiter">Garçom</option>
@@ -1647,8 +1644,8 @@ function EditUserModal({ isOpen, onClose, user, onSuccess, currentUser }: any) {
             <option value="admin">Admin</option>
             {(currentUser?.role === 'host' || user.role === 'host') && <option value="host">Host</option>}
           </select>
-          {user.role === 'host' && (
-            <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">O cargo de host não pode ser alterado.</p>
+          {user.username === 'deckserrinha' && (
+            <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">O cargo do host inicial não pode ser alterado.</p>
           )}
         </div>
         <Button type="submit" className="w-full">Salvar Alterações</Button>
@@ -1776,6 +1773,8 @@ function OrderModal({ isOpen, onClose, menu, categories = [], groups = [], onSen
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [editingObservation, setEditingObservation] = useState<string | null>(null);
+  const [observationText, setObservationText] = useState("");
 
   useEffect(() => {
     if (isOpen) {
@@ -1783,6 +1782,8 @@ function OrderModal({ isOpen, onClose, menu, categories = [], groups = [], onSen
       setActiveCategory(null);
       setActiveGroup(null);
       setSearch("");
+      setEditingObservation(null);
+      setObservationText("");
     }
   }, [isOpen]);
 
@@ -1993,8 +1994,12 @@ function OrderModal({ isOpen, onClose, menu, categories = [], groups = [], onSen
                   <div className="flex items-center gap-1">
                     <button 
                       onClick={() => {
-                        const obs = prompt('Observação para ' + item.name + ':', item.observation || '');
-                        if (obs !== null) updateObservation(item.id, obs);
+                        if (editingObservation === item.id) {
+                          setEditingObservation(null);
+                        } else {
+                          setEditingObservation(item.id);
+                          setObservationText(item.observation || '');
+                        }
                       }} 
                       className="text-zinc-500 hover:bg-zinc-200 p-1 rounded dark:hover:bg-zinc-700 transition-colors"
                       title="Adicionar observação"
@@ -2006,11 +2011,39 @@ function OrderModal({ isOpen, onClose, menu, categories = [], groups = [], onSen
                     </button>
                   </div>
                 </div>
-                {item.observation && (
+                {editingObservation === item.id ? (
+                  <div className="flex items-center gap-2 mt-2">
+                    <Input 
+                      autoFocus
+                      value={observationText}
+                      onChange={(e) => setObservationText(e.target.value)}
+                      placeholder="Ex: Sem cebola..."
+                      className="h-8 text-xs"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          updateObservation(item.id, observationText);
+                          setEditingObservation(null);
+                        } else if (e.key === 'Escape') {
+                          setEditingObservation(null);
+                        }
+                      }}
+                    />
+                    <Button 
+                      size="sm" 
+                      className="h-8 px-2"
+                      onClick={() => {
+                        updateObservation(item.id, observationText);
+                        setEditingObservation(null);
+                      }}
+                    >
+                      Salvar
+                    </Button>
+                  </div>
+                ) : item.observation ? (
                   <div className="text-xs text-zinc-500 dark:text-zinc-400 italic pl-1">
                     Obs: {item.observation}
                   </div>
-                )}
+                ) : null}
               </div>
             ))}
             {cart.length === 0 && <p className="text-center text-sm text-zinc-400 py-4">Carrinho vazio</p>}

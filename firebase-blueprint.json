@@ -1,0 +1,218 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "A user of the application",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["host", "admin", "waiter", "kitchen"]
+        },
+        "username": {
+          "type": "string"
+        }
+      },
+      "required": ["email", "role", "username"]
+    },
+    "Table": {
+      "title": "Table",
+      "description": "A restaurant table",
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["free", "open", "bill_requested"]
+        },
+        "customer_name": {
+          "type": "string"
+        },
+        "people_count": {
+          "type": "number"
+        },
+        "opened_at": {
+          "type": "string"
+        }
+      },
+      "required": ["number", "status"]
+    },
+    "MenuItem": {
+      "title": "MenuItem",
+      "description": "An item on the menu",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "price": {
+          "type": "number"
+        },
+        "type": {
+          "type": "string"
+        },
+        "category": {
+          "type": "string"
+        },
+        "active": {
+          "type": "number"
+        }
+      },
+      "required": ["name", "price", "type", "category", "active"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "A menu category",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": ["name"]
+    },
+    "ItemGroup": {
+      "title": "ItemGroup",
+      "description": "A menu item group",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": ["name"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "An order for a table",
+      "type": "object",
+      "properties": {
+        "table_id": {
+          "type": "number"
+        },
+        "menu_item_id": {
+          "type": "string"
+        },
+        "quantity": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "delivered"]
+        },
+        "is_read": {
+          "type": "number"
+        },
+        "observation": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "item_name": {
+          "type": "string"
+        },
+        "item_price": {
+          "type": "number"
+        }
+      },
+      "required": ["table_id", "menu_item_id", "quantity", "status", "is_read", "timestamp", "item_name", "item_price"]
+    },
+    "HistoryEvent": {
+      "title": "HistoryEvent",
+      "description": "An event in the history",
+      "type": "object",
+      "properties": {
+        "user_id": {
+          "type": "string"
+        },
+        "username": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        },
+        "details": {
+          "type": "string"
+        },
+        "order_id": {
+          "type": "string"
+        },
+        "is_read": {
+          "type": "number"
+        },
+        "timestamp": {
+          "type": "string"
+        }
+      },
+      "required": ["user_id", "username", "action", "details", "is_read", "timestamp"]
+    },
+    "Setting": {
+      "title": "Setting",
+      "description": "A system setting",
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": ["value"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/User"
+      },
+      "description": "Users of the application"
+    },
+    "tables/{tableId}": {
+      "schema": {
+        "$ref": "#/entities/Table"
+      },
+      "description": "Restaurant tables"
+    },
+    "menu_items/{menuItemId}": {
+      "schema": {
+        "$ref": "#/entities/MenuItem"
+      },
+      "description": "Menu items"
+    },
+    "categories/{categoryId}": {
+      "schema": {
+        "$ref": "#/entities/Category"
+      },
+      "description": "Menu categories"
+    },
+    "item_groups/{groupId}": {
+      "schema": {
+        "$ref": "#/entities/ItemGroup"
+      },
+      "description": "Menu item groups"
+    },
+    "orders/{orderId}": {
+      "schema": {
+        "$ref": "#/entities/Order"
+      },
+      "description": "Orders for tables"
+    },
+    "history/{historyId}": {
+      "schema": {
+        "$ref": "#/entities/HistoryEvent"
+      },
+      "description": "History events"
+    },
+    "settings/{settingId}": {
+      "schema": {
+        "$ref": "#/entities/Setting"
+      },
+      "description": "System settings"
+    }
+  }
+}
