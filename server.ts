@@ -115,6 +115,12 @@ try {
   // Column already exists
 }
 
+try {
+  db.prepare("ALTER TABLE item_groups ADD COLUMN category_name TEXT").run();
+} catch (e) {
+  // Column already exists
+}
+
 // Seed initial data
 const hostExists = db.prepare("SELECT * FROM users WHERE username = ?").get("deckserrinha");
 if (!hostExists) {
@@ -246,16 +252,16 @@ async function loadFromFirestore() {
     const groupSnapshot = await getDocs(collection(firestoreDb, "item_groups")).catch(e => handleFirestoreError(e, OperationType.GET, "item_groups"));
     if (groupSnapshot && !groupSnapshot.empty) {
       db.prepare("DELETE FROM item_groups").run();
-      const insertGroup = db.prepare("INSERT INTO item_groups (id, name) VALUES (?, ?)");
+      const insertGroup = db.prepare("INSERT INTO item_groups (id, name, category_name) VALUES (?, ?, ?)");
       groupSnapshot.forEach(doc => {
         const data = doc.data();
-        insertGroup.run(doc.id, data.name);
+        insertGroup.run(doc.id, data.name, data.category_name || null);
       });
     } else if (groupSnapshot) {
       console.log("Firestore item_groups is empty. Syncing from SQLite...");
       const groups = db.prepare("SELECT * FROM item_groups").all() as any[];
       for (const group of groups) {
-        await setDoc(doc(firestoreDb, "item_groups", group.id), { name: group.name }).catch(e => handleFirestoreError(e, OperationType.CREATE, "item_groups"));
+        await setDoc(doc(firestoreDb, "item_groups", group.id), { name: group.name, category_name: group.category_name || null }).catch(e => handleFirestoreError(e, OperationType.CREATE, "item_groups"));
       }
     }
     console.log("Data loaded/synced from Firestore successfully.");
@@ -400,7 +406,7 @@ async function startServer() {
     ws.send(JSON.stringify({ type: "CATEGORIES_UPDATE", payload: categories }));
 
     const groups = db.prepare("SELECT * FROM item_groups").all();
-    ws.send(JSON.stringify({ type: "GROUPS_UPDATE", payload: groups }));
+    ws.send(JSON.stringify({ type: "DETAILS_UPDATE", payload: groups }));
 
     ws.on("message", async (message) => {
       try {
@@ -633,14 +639,14 @@ async function startServer() {
             break;
           }
 
-          case "GROUP_ADD":
+          case "DETAIL_ADD":
             const newGroupId = uuidv4();
-            db.prepare("INSERT INTO item_groups (id, name) VALUES (?, ?)").run(newGroupId, data.payload.name);
-            await setDoc(doc(firestoreDb, "item_groups", newGroupId), { name: data.payload.name }).catch(e => handleFirestoreError(e, OperationType.CREATE, "item_groups"));
-            broadcast({ type: "GROUPS_UPDATE", payload: db.prepare("SELECT * FROM item_groups").all() });
+            db.prepare("INSERT INTO item_groups (id, name, category_name) VALUES (?, ?, ?)").run(newGroupId, data.payload.name, data.payload.category_name);
+            await setDoc(doc(firestoreDb, "item_groups", newGroupId), { name: data.payload.name, category_name: data.payload.category_name }).catch(e => handleFirestoreError(e, OperationType.CREATE, "item_groups"));
+            broadcast({ type: "DETAILS_UPDATE", payload: db.prepare("SELECT * FROM item_groups").all() });
             break;
 
-          case "GROUP_EDIT": {
+          case "DETAIL_EDIT": {
             const oldGroup = db.prepare("SELECT name FROM item_groups WHERE id = ?").get(data.payload.id) as { name: string };
             if (oldGroup && oldGroup.name !== data.payload.name) {
               db.prepare("UPDATE menu_items SET category = ? WHERE category = ?").run(data.payload.name, oldGroup.name);
@@ -650,13 +656,13 @@ async function startServer() {
               }
               broadcast({ type: "MENU_UPDATE", payload: db.prepare("SELECT * FROM menu_items").all() });
             }
-            db.prepare("UPDATE item_groups SET name = ? WHERE id = ?").run(data.payload.name, data.payload.id);
-            await setDoc(doc(firestoreDb, "item_groups", data.payload.id), { name: data.payload.name }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "item_groups"));
-            broadcast({ type: "GROUPS_UPDATE", payload: db.prepare("SELECT * FROM item_groups").all() });
+            db.prepare("UPDATE item_groups SET name = ?, category_name = ? WHERE id = ?").run(data.payload.name, data.payload.category_name, data.payload.id);
+            await setDoc(doc(firestoreDb, "item_groups", data.payload.id), { name: data.payload.name, category_name: data.payload.category_name }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "item_groups"));
+            broadcast({ type: "DETAILS_UPDATE", payload: db.prepare("SELECT * FROM item_groups").all() });
             break;
           }
 
-          case "GROUP_DELETE": {
+          case "DETAIL_DELETE": {
             const oldGroup = db.prepare("SELECT name FROM item_groups WHERE id = ?").get(data.payload.id) as { name: string };
             if (oldGroup) {
               db.prepare("UPDATE menu_items SET category = NULL WHERE category = ?").run(oldGroup.name);
@@ -668,7 +674,7 @@ async function startServer() {
             }
             db.prepare("DELETE FROM item_groups WHERE id = ?").run(data.payload.id);
             await deleteDoc(doc(firestoreDb, "item_groups", data.payload.id)).catch(e => handleFirestoreError(e, OperationType.DELETE, "item_groups"));
-            broadcast({ type: "GROUPS_UPDATE", payload: db.prepare("SELECT * FROM item_groups").all() });
+            broadcast({ type: "DETAILS_UPDATE", payload: db.prepare("SELECT * FROM item_groups").all() });
             break;
           }
         }
@@ -892,11 +898,11 @@ async function startServer() {
         }
 
         if (itemGroups.length > 0) {
-          const insertGroup = db.prepare("INSERT OR REPLACE INTO item_groups (id, name) VALUES (?, ?)");
+          const insertGroup = db.prepare("INSERT OR REPLACE INTO item_groups (id, name, category_name) VALUES (?, ?, ?)");
           for (const group of itemGroups) {
             const id = group.id || uuidv4();
-            insertGroup.run(id, group.name);
-            setDoc(doc(firestoreDb, "item_groups", id), { name: group.name }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "item_groups"));
+            insertGroup.run(id, group.name, group.category_name || null);
+            setDoc(doc(firestoreDb, "item_groups", id), { name: group.name, category_name: group.category_name || null }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "item_groups"));
           }
         }
 
@@ -923,7 +929,7 @@ async function startServer() {
         broadcast({ type: "CATEGORIES_UPDATE", payload: db.prepare("SELECT * FROM categories").all() });
       }
       if (itemGroups.length > 0) {
-        broadcast({ type: "ITEM_GROUPS_UPDATE", payload: db.prepare("SELECT * FROM item_groups").all() });
+        broadcast({ type: "DETAILS_UPDATE", payload: db.prepare("SELECT * FROM item_groups").all() });
       }
       if (menuItems.length > 0) {
         broadcast({ type: "MENU_UPDATE", payload: db.prepare("SELECT * FROM menu_items").all() });

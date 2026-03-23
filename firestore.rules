@@ -72,9 +72,10 @@ service cloud.firestore {
              data.name is string && data.name.size() > 0 && data.name.size() < 50;
     }
 
-    function isValidItemGroup(data) {
+    function isValidDetail(data) {
       return data.keys().hasAll(['name']) &&
-             data.name is string && data.name.size() > 0 && data.name.size() < 50;
+             data.name is string && data.name.size() > 0 && data.name.size() < 50 &&
+             (!('category_name' in data) || data.category_name == null || (data.category_name is string && data.category_name.size() < 50));
     }
 
     function isValidOrder(data) {
@@ -140,8 +141,8 @@ service cloud.firestore {
 
     match /item_groups/{groupId} {
       allow read: if isStaff();
-      allow create: if isAdmin() && isValidItemGroup(request.resource.data);
-      allow update: if isAdmin() && isValidItemGroup(request.resource.data);
+      allow create: if isAdmin() && isValidDetail(request.resource.data);
+      allow update: if isAdmin() && isValidDetail(request.resource.data);
       allow delete: if isAdmin();
     }
 

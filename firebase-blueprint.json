@@ -77,12 +77,15 @@
       },
       "required": ["name"]
     },
-    "ItemGroup": {
-      "title": "ItemGroup",
-      "description": "A menu item group",
+    "Detail": {
+      "title": "Detail",
+      "description": "A menu item detail (formerly group)",
       "type": "object",
       "properties": {
         "name": {
+          "type": "string"
+        },
+        "category_name": {
           "type": "string"
         }
       },
@@ -192,9 +195,9 @@
     },
     "item_groups/{groupId}": {
       "schema": {
-        "$ref": "#/entities/ItemGroup"
+        "$ref": "#/entities/Detail"
       },
-      "description": "Menu item groups"
+      "description": "Menu item details (formerly groups)"
     },
     "orders/{orderId}": {
       "schema": {

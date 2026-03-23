@@ -64,13 +64,13 @@ export type WSEvent =
   | { type: 'TABLE_CLOSE'; payload: { tableId: number } }
   | { type: 'HISTORY_UPDATE'; payload: HistoryEvent[] }
   | { type: 'CATEGORIES_UPDATE'; payload: any[] }
-  | { type: 'GROUPS_UPDATE'; payload: any[] }
+  | { type: 'DETAILS_UPDATE'; payload: any[] }
   | { type: 'CATEGORY_ADD'; payload: { name: string } }
   | { type: 'CATEGORY_EDIT'; payload: { id: string; name: string } }
   | { type: 'CATEGORY_DELETE'; payload: { id: string } }
-  | { type: 'GROUP_ADD'; payload: { name: string } }
-  | { type: 'GROUP_EDIT'; payload: { id: string; name: string } }
-  | { type: 'GROUP_DELETE'; payload: { id: string } }
+  | { type: 'DETAIL_ADD'; payload: { name: string } }
+  | { type: 'DETAIL_EDIT'; payload: { id: string; name: string } }
+  | { type: 'DETAIL_DELETE'; payload: { id: string } }
   | { type: 'SETTINGS_UPDATE'; payload: any }
   | { type: 'NOTIFICATION'; payload: { message: string; type: 'info' | 'success' | 'warning' } }
   | { type: 'FORCE_LOGOUT'; payload: { message: string } };

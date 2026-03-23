@@ -14,6 +14,9 @@ import {
   DollarSign,
   X,
   ChevronRight,
+  ChevronLeft,
+  User as UserIcon,
+  Tags,
   Menu as MenuIcon,
   RefreshCw,
   Download,
@@ -22,7 +25,11 @@ import {
   Sun,
   Search,
   Minus,
-  MessageSquare
+  MessageSquare,
+  Bell,
+  Volume2,
+  ChefHat,
+  UserCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Toaster, toast } from 'react-hot-toast';
@@ -141,15 +148,41 @@ const TableCard = ({ table, onClick }: any) => {
 // --- Main App ---
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [user, setUser] = useState<User | null>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('user');
+        return saved ? JSON.parse(saved) : null;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  });
+  const [isLoggedIn, setIsLoggedIn] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('isLoggedIn') === 'true';
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    if (isLoggedIn && user) {
+      localStorage.setItem('isLoggedIn', 'true');
+      localStorage.setItem('user', JSON.stringify(user));
+    } else {
+      localStorage.removeItem('isLoggedIn');
+      localStorage.removeItem('user');
+    }
+  }, [isLoggedIn, user]);
+
   const [activeTab, setActiveTab] = useState<'mesas' | 'cardapio' | 'historico' | 'config'>('mesas');
   
   // State from server
   const [tables, setTables] = useState<Table[]>([]);
   const [menu, setMenu] = useState<MenuItem[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
-  const [groups, setGroups] = useState<any[]>([]);
+  const [details, setDetails] = useState<any[]>([]);
   const [historyEvents, setHistoryEvents] = useState<any[]>([]);
   const [allOrders, setAllOrders] = useState<any[]>([]);
   const [users, setUsers] = useState<User[]>([]);
@@ -160,6 +193,35 @@ export default function App() {
     }
     return false;
   });
+
+  const [notificationsEnabled, setNotificationsEnabled] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('notificationsEnabled');
+      return saved !== null ? JSON.parse(saved) : true;
+    }
+    return true;
+  });
+
+  const [soundEnabled, setSoundEnabled] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('soundEnabled');
+      return saved !== null ? JSON.parse(saved) : true;
+    }
+    return true;
+  });
+
+  const notificationsEnabledRef = useRef(notificationsEnabled);
+  const soundEnabledRef = useRef(soundEnabled);
+
+  useEffect(() => {
+    notificationsEnabledRef.current = notificationsEnabled;
+    localStorage.setItem('notificationsEnabled', JSON.stringify(notificationsEnabled));
+  }, [notificationsEnabled]);
+
+  useEffect(() => {
+    soundEnabledRef.current = soundEnabled;
+    localStorage.setItem('soundEnabled', JSON.stringify(soundEnabled));
+  }, [soundEnabled]);
   
   // UI State
   const [selectedTable, setSelectedTable] = useState<Table | null>(null);
@@ -238,8 +300,8 @@ export default function App() {
           case 'CATEGORIES_UPDATE':
             setCategories(data.payload);
             break;
-          case 'GROUPS_UPDATE':
-            setGroups(data.payload);
+          case 'DETAILS_UPDATE':
+            setDetails(data.payload);
             break;
           case 'HISTORY_UPDATE':
             setHistoryEvents(data.payload);
@@ -259,9 +321,36 @@ export default function App() {
             setAllOrders(prev => prev.filter(o => o.id !== data.payload.orderId));
             break;
           case 'NOTIFICATION':
-            toast(data.payload.message, {
-              icon: data.payload.type === 'success' ? '✅' : data.payload.type === 'warning' ? '⚠️' : 'ℹ️',
-            });
+            if (notificationsEnabledRef.current) {
+              toast(data.payload.message, {
+                icon: data.payload.type === 'success' ? '✅' : data.payload.type === 'warning' ? '⚠️' : 'ℹ️',
+              });
+            }
+            if (soundEnabledRef.current) {
+              try {
+                const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+                if (AudioContext) {
+                  const ctx = new AudioContext();
+                  const playBeep = (time: number) => {
+                    const osc = ctx.createOscillator();
+                    const gainNode = ctx.createGain();
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(880, time);
+                    osc.frequency.exponentialRampToValueAtTime(440, time + 0.1);
+                    gainNode.gain.setValueAtTime(0.1, time);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, time + 0.1);
+                    osc.connect(gainNode);
+                    gainNode.connect(ctx.destination);
+                    osc.start(time);
+                    osc.stop(time + 0.1);
+                  };
+                  playBeep(ctx.currentTime);
+                  playBeep(ctx.currentTime + 0.15);
+                }
+              } catch (e) {
+                console.log('Audio play failed:', e);
+              }
+            }
             break;
           case 'FORCE_LOGOUT':
             if (user?.role !== 'host') {
@@ -312,40 +401,37 @@ export default function App() {
   // --- Auth View ---
   if (!isLoggedIn) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-50 p-4">
+      <div className="flex min-h-[100dvh] items-center justify-center bg-zinc-50 dark:bg-zinc-950 p-4">
         <Toaster position="top-right" />
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="w-full max-w-md rounded-3xl bg-white p-8 shadow-xl"
+          className="w-full max-w-md rounded-3xl bg-white dark:bg-zinc-900 p-8 shadow-xl dark:shadow-zinc-900/50"
         >
           <div className="mb-8 text-center">
             <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-600 text-white">
               <UtensilsCrossed className="h-8 w-8" />
             </div>
-            <h1 className="text-3xl font-bold text-zinc-900">Deck Serrinha</h1>
-            <p className="text-zinc-500">Sistema de Gestão de Restaurante</p>
+            <h1 className="text-3xl font-bold text-zinc-900 dark:text-zinc-100">Deck Serrinha</h1>
+            <p className="text-zinc-500 dark:text-zinc-400">Sistema de Gestão de Restaurante</p>
           </div>
           <form onSubmit={handleLogin} className="space-y-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium text-zinc-700">Login</label>
+              <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Login</label>
               <Input name="username" placeholder="Seu usuário" required />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium text-zinc-700">Senha</label>
+              <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Senha</label>
               <Input name="password" type="password" placeholder="Sua senha" required />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium text-zinc-700">Token de Acesso (Se não for Host)</label>
+              <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Token de Acesso (Se não for Host)</label>
               <Input name="token" type="password" placeholder="Token do sistema" />
             </div>
             <Button type="submit" className="w-full py-6 text-lg">
               Entrar
             </Button>
           </form>
-          <div className="mt-6 text-center text-xs text-zinc-400">
-            <p>Host padrão: deckserrinha / deckappadmin</p>
-          </div>
         </motion.div>
       </div>
     );
@@ -353,7 +439,7 @@ export default function App() {
 
   // --- Main View ---
   return (
-    <div className="flex h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
+    <div className="flex h-[100dvh] w-full overflow-hidden bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
       <Toaster position="top-right" />
       
       {/* Sidebar */}
@@ -400,15 +486,26 @@ export default function App() {
 
         <div className="border-t border-zinc-100 p-4 dark:border-zinc-800">
           <div className="mb-4 flex items-center px-2">
-            <div className="h-8 w-8 rounded-full bg-zinc-100 flex items-center justify-center text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
-              <Users className="h-4 w-4" />
+            <div className={cn(
+              "h-10 w-10 rounded-full flex items-center justify-center shadow-sm border",
+              user?.role === 'host' ? "bg-purple-100 text-purple-600 border-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:border-purple-800/50" :
+              user?.role === 'waiter' ? "bg-blue-100 text-blue-600 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800/50" :
+              user?.role === 'kitchen' ? "bg-amber-100 text-amber-600 border-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-800/50" :
+              "bg-zinc-100 text-zinc-600 border-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:border-zinc-700"
+            )}>
+              {user?.role === 'host' ? <UserCircle className="h-6 w-6" /> :
+               user?.role === 'waiter' ? <Users className="h-5 w-5" /> :
+               user?.role === 'kitchen' ? <ChefHat className="h-5 w-5" /> :
+               <UserCircle className="h-5 w-5" />}
             </div>
             <div className="ml-3">
-              <p className="text-sm font-medium dark:text-zinc-200">{user?.username}</p>
-              <p className="text-xs text-zinc-500 capitalize dark:text-zinc-500">{user?.role}</p>
+              <p className="text-sm font-semibold dark:text-zinc-200">{user?.username}</p>
+              <p className="text-xs font-medium text-zinc-500 capitalize dark:text-zinc-400">
+                {user?.role === 'waiter' ? 'Garçom' : user?.role === 'kitchen' ? 'Cozinha' : user?.role}
+              </p>
             </div>
           </div>
-          <Button variant="ghost" className="w-full justify-start text-rose-600 hover:bg-rose-50 hover:text-rose-700 dark:hover:bg-rose-900/20" onClick={() => setIsLoggedIn(false)}>
+          <Button variant="ghost" className="w-full justify-start text-rose-600 hover:bg-rose-50 hover:text-rose-700 dark:hover:bg-rose-900/20" onClick={() => { setIsLoggedIn(false); setUser(null); }}>
             <LogOut className="mr-2 h-4 w-4" />
             Sair
           </Button>
@@ -424,7 +521,7 @@ export default function App() {
       )}
 
       {/* Main Content */}
-      <main className="flex flex-1 flex-col overflow-hidden">
+      <main className="flex flex-1 flex-col overflow-hidden overscroll-none">
         <header className="flex h-14 items-center justify-between border-b border-zinc-200 bg-white px-4 md:px-6 dark:bg-zinc-900 dark:border-zinc-800">
           <div className="flex items-center gap-4">
             <button onClick={() => setIsSidebarOpen(true)} className="md:hidden text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200">
@@ -443,7 +540,7 @@ export default function App() {
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto p-4 md:p-6">
+        <div className="flex-1 overflow-y-auto overscroll-contain p-4 md:p-6" style={{ WebkitOverflowScrolling: 'touch' }}>
           {activeTab === 'mesas' && (
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
               {tables.map((table) => (
@@ -463,7 +560,7 @@ export default function App() {
             <MenuTab 
               menu={menu} 
               categories={categories}
-              groups={groups}
+              details={details}
               canEdit={['host', 'admin', 'kitchen'].includes(user?.role || '')} 
               onAdd={() => setIsAddMenuModalOpen(true)} 
               onEdit={(item: any) => {
@@ -490,6 +587,10 @@ export default function App() {
               settings={settings}
               darkMode={darkMode}
               setDarkMode={setDarkMode}
+              notificationsEnabled={notificationsEnabled}
+              setNotificationsEnabled={setNotificationsEnabled}
+              soundEnabled={soundEnabled}
+              setSoundEnabled={setSoundEnabled}
               onRefreshUsers={fetchUsers}
               onAddUser={() => setIsAddUserModalOpen(true)} 
               onEditUser={(u: User) => {
@@ -497,9 +598,10 @@ export default function App() {
                 setIsEditUserModalOpen(true);
               }}
               currentUser={user} 
+              onUpdateCurrentUser={setUser}
               onSaveSettings={(newSettings: any) => sendWS('SETTINGS_UPDATE', newSettings)}
               categories={categories}
-              groups={groups}
+              details={details}
               sendWS={sendWS}
               menu={menu}
               onResetHistory={async () => {
@@ -633,7 +735,7 @@ export default function App() {
         onClose={() => setIsOrderModalOpen(false)} 
         menu={menu}
         categories={categories}
-        groups={groups}
+        details={details}
         onSend={(items) => {
           sendWS('ORDER_SEND', { tableId: selectedTable?.id, userId: user?.id, username: user?.username, items });
           setIsOrderModalOpen(false);
@@ -663,7 +765,7 @@ export default function App() {
         onClose={() => setIsAddMenuModalOpen(false)} 
         onSave={(data) => sendWS('MENU_ADD', data)}
         categories={categories}
-        groups={groups}
+        details={details}
       />
 
       <EditMenuModal 
@@ -675,7 +777,7 @@ export default function App() {
         onSave={(data: any) => sendWS('MENU_EDIT', data)}
         item={editingMenuItem}
         categories={categories}
-        groups={groups}
+        details={details}
       />
 
       <Modal
@@ -809,7 +911,7 @@ function TableActionsModal({ isOpen, onClose, table, orders, isHost, onOpenTable
 
             <div className="space-y-2">
               <h4 className="text-xs font-bold uppercase text-zinc-400">Pedidos Atuais</h4>
-              <div className="max-h-40 overflow-y-auto rounded-lg border border-zinc-100 bg-white dark:bg-zinc-900 dark:border-zinc-800">
+              <div className="max-h-40 overflow-y-auto overscroll-contain rounded-lg border border-zinc-100 bg-white dark:bg-zinc-900 dark:border-zinc-800" style={{ WebkitOverflowScrolling: 'touch' }}>
                 {orders.length === 0 ? (
                   <p className="p-4 text-center text-xs text-zinc-400 dark:text-zinc-500">Nenhum pedido realizado</p>
                 ) : (
@@ -863,9 +965,9 @@ function TableActionsModal({ isOpen, onClose, table, orders, isHost, onOpenTable
   );
 }
 
-function MenuTab({ menu, categories = [], groups = [], canEdit, onAdd, onEdit, onWS }: any) {
+function MenuTab({ menu, categories = [], details = [], canEdit, onAdd, onEdit, onWS }: any) {
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
-  const [activeGroup, setActiveGroup] = useState<string | null>(null);
+  const [activeDetail, setActiveDetail] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, title: '', message: '', onConfirm: () => {} });
 
@@ -874,8 +976,8 @@ function MenuTab({ menu, categories = [], groups = [], canEdit, onAdd, onEdit, o
       return item.name.toLowerCase().includes(search.toLowerCase());
     }
     const matchesCategory = activeCategory ? item.type === activeCategory : true;
-    const matchesGroup = activeGroup ? item.category === activeGroup : true;
-    return matchesCategory && matchesGroup;
+    const matchesDetail = activeDetail ? item.category === activeDetail : true;
+    return matchesCategory && matchesDetail;
   });
 
   const handleDownload = () => {
@@ -984,10 +1086,10 @@ function MenuTab({ menu, categories = [], groups = [], canEdit, onAdd, onEdit, o
         )}
       </div>
 
-      {!search && (activeCategory || activeGroup) && (
+      {!search && (activeCategory || activeDetail) && (
         <div className="flex items-center gap-2 text-sm font-medium text-zinc-500 dark:text-zinc-400">
           <button 
-            onClick={() => { setActiveCategory(null); setActiveGroup(null); }} 
+            onClick={() => { setActiveCategory(null); setActiveDetail(null); }} 
             className="hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors"
           >
             Categorias
@@ -996,17 +1098,17 @@ function MenuTab({ menu, categories = [], groups = [], canEdit, onAdd, onEdit, o
             <>
               <ChevronRight className="h-4 w-4" />
               <button 
-                onClick={() => setActiveGroup(null)} 
-                className={cn("hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors", !activeGroup && "text-zinc-900 dark:text-zinc-100")}
+                onClick={() => setActiveDetail(null)} 
+                className={cn("hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors", !activeDetail && "text-zinc-900 dark:text-zinc-100")}
               >
                 {activeCategory}
               </button>
             </>
           )}
-          {activeGroup && (
+          {activeDetail && (
             <>
               <ChevronRight className="h-4 w-4" />
-              <span className="text-zinc-900 dark:text-zinc-100">{activeGroup}</span>
+              <span className="text-zinc-900 dark:text-zinc-100">{activeDetail}</span>
             </>
           )}
         </div>
@@ -1045,15 +1147,15 @@ function MenuTab({ menu, categories = [], groups = [], canEdit, onAdd, onEdit, o
                 </div>
               )}
             </div>
-          ) : !activeGroup ? (
+          ) : !activeDetail ? (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-              {groups.map((g: any) => {
+              {details.filter((g: any) => g.category_name === activeCategory).map((g: any) => {
                 const count = menu.filter((m: any) => m.type === activeCategory && m.category === g.name).length;
                 if (count === 0) return null;
                 return (
                   <button 
                     key={g.id} 
-                    onClick={() => setActiveGroup(g.name)}
+                    onClick={() => setActiveDetail(g.name)}
                     className="flex flex-col items-center justify-center gap-1 rounded-xl border border-zinc-200 bg-white p-3 shadow-sm transition-all hover:border-emerald-500 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-emerald-500"
                   >
                     <span className="text-lg font-bold text-zinc-900 dark:text-zinc-100">{g.name}</span>
@@ -1061,9 +1163,9 @@ function MenuTab({ menu, categories = [], groups = [], canEdit, onAdd, onEdit, o
                   </button>
                 );
               })}
-              {groups.filter((g: any) => menu.filter((m: any) => m.type === activeCategory && m.category === g.name).length > 0).length === 0 && (
+              {details.filter((g: any) => g.category_name === activeCategory && menu.filter((m: any) => m.type === activeCategory && m.category === g.name).length > 0).length === 0 && (
                 <div className="col-span-full py-12 text-center text-zinc-500 dark:text-zinc-400">
-                  Nenhum grupo com itens cadastrados.
+                  Nenhum detalhe com itens cadastrados.
                 </div>
               )}
             </div>
@@ -1072,13 +1174,13 @@ function MenuTab({ menu, categories = [], groups = [], canEdit, onAdd, onEdit, o
               {filteredMenu.map(renderItemCard)}
               {filteredMenu.length === 0 && (
                 <div className="py-12 text-center text-zinc-500 dark:text-zinc-400">
-                  Nenhum item nesta categoria e grupo.
+                  Nenhum item nesta categoria e detalhe.
                 </div>
               )}
             </div>
           )}
 
-          {(!activeCategory || !activeGroup) && (
+          {(!activeCategory || !activeDetail) && (
             <>
               <div className="my-8 border-t border-zinc-200 dark:border-zinc-800" />
               <div className="mb-4 flex items-center justify-between">
@@ -1115,11 +1217,13 @@ function ConfirmModal({ isOpen, onClose, onConfirm, title, message }: any) {
   );
 }
 
-function CategoryGroupManager({ categories = [], groups = [], menu = [], sendWS }: any) {
+function CategoryDetailManager({ categories = [], details = [], menu = [], sendWS }: any) {
   const [newCat, setNewCat] = useState('');
-  const [newGroup, setNewGroup] = useState('');
+  const [newDetail, setNewDetail] = useState('');
+  const [newDetailCategory, setNewDetailCategory] = useState('');
   const [editingCat, setEditingCat] = useState<any>(null);
-  const [editingGroup, setEditingGroup] = useState<any>(null);
+  const [editingDetail, setEditingDetail] = useState<any>(null);
+  const [editingDetailCategory, setEditingDetailCategory] = useState('');
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, title: '', message: '', onConfirm: () => {} });
 
   return (
@@ -1187,49 +1291,84 @@ function CategoryGroupManager({ categories = [], groups = [], menu = [], sendWS 
           </ul>
         </div>
 
-        {/* Groups */}
+        {/* Detalhes */}
         <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
-          <h4 className="text-md font-semibold mb-4 dark:text-zinc-100">Grupos</h4>
+          <h4 className="text-md font-semibold mb-4 dark:text-zinc-100">Detalhes</h4>
           <form onSubmit={(e) => {
             e.preventDefault();
-            if (newGroup.trim()) {
-              sendWS('GROUP_ADD', { name: newGroup.trim() });
-              setNewGroup('');
+            if (newDetail.trim() && newDetailCategory) {
+              sendWS('DETAIL_ADD', { name: newDetail.trim(), category_name: newDetailCategory });
+              setNewDetail('');
+              setNewDetailCategory('');
+            } else {
+              toast.error("Preencha o nome e selecione uma categoria");
             }
-          }} className="flex gap-2 mb-4">
-            <Input value={newGroup} onChange={(e: any) => setNewGroup(e.target.value)} placeholder="Novo grupo..." />
-            <Button type="submit">Adicionar</Button>
+          }} className="flex flex-col gap-2 mb-4">
+            <div className="flex gap-2">
+              <Input value={newDetail} onChange={(e: any) => setNewDetail(e.target.value)} placeholder="Novo detalhe..." />
+              <select
+                value={newDetailCategory}
+                onChange={(e) => setNewDetailCategory(e.target.value)}
+                className="flex h-10 w-full items-center justify-between rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm ring-offset-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-zinc-950 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:ring-offset-zinc-950 dark:placeholder:text-zinc-400 dark:focus:ring-zinc-300"
+              >
+                <option value="">Selecione uma categoria...</option>
+                {categories.map((c: any) => (
+                  <option key={c.id} value={c.name}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+            <Button type="submit" className="w-full">Adicionar</Button>
           </form>
           <ul className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
-            {groups.map((g: any) => {
-              const groupItems = menu.filter((m: any) => m.category === g.name);
+            {details.map((g: any) => {
+              const detailItems = menu.filter((m: any) => m.category === g.name);
               return (
               <li key={g.id} className="flex flex-col gap-2 p-3 rounded-xl border border-zinc-100 bg-zinc-50 dark:bg-zinc-800/50 dark:border-zinc-800">
                 <div className="flex items-center justify-between">
-                  {editingGroup?.id === g.id ? (
+                  {editingDetail?.id === g.id ? (
                     <form onSubmit={(e) => {
                       e.preventDefault();
-                      if (editingGroup.name.trim()) {
-                        sendWS('GROUP_EDIT', { id: g.id, name: editingGroup.name.trim() });
-                        setEditingGroup(null);
+                      if (editingDetail.name.trim() && editingDetailCategory) {
+                        sendWS('DETAIL_EDIT', { id: g.id, name: editingDetail.name.trim(), category_name: editingDetailCategory });
+                        setEditingDetail(null);
+                        setEditingDetailCategory('');
+                      } else {
+                        toast.error("Preencha o nome e selecione uma categoria");
                       }
-                    }} className="flex gap-2 w-full">
-                      <Input autoFocus value={editingGroup.name} onChange={(e: any) => setEditingGroup({ ...editingGroup, name: e.target.value })} />
-                      <Button type="submit" className="px-2 py-1 h-auto text-xs">Salvar</Button>
-                      <Button type="button" variant="outline" className="px-2 py-1 h-auto text-xs" onClick={() => setEditingGroup(null)}>Cancelar</Button>
+                    }} className="flex flex-col gap-2 w-full">
+                      <div className="flex gap-2">
+                        <Input autoFocus value={editingDetail.name} onChange={(e: any) => setEditingDetail({ ...editingDetail, name: e.target.value })} />
+                        <select
+                          value={editingDetailCategory}
+                          onChange={(e) => setEditingDetailCategory(e.target.value)}
+                          className="flex h-10 w-full items-center justify-between rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm ring-offset-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-zinc-950 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:ring-offset-zinc-950 dark:placeholder:text-zinc-400 dark:focus:ring-zinc-300"
+                        >
+                          <option value="">Selecione uma categoria...</option>
+                          {categories.map((c: any) => (
+                            <option key={c.id} value={c.name}>{c.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="flex gap-2 justify-end">
+                        <Button type="submit" className="px-2 py-1 h-auto text-xs">Salvar</Button>
+                        <Button type="button" variant="outline" className="px-2 py-1 h-auto text-xs" onClick={() => { setEditingDetail(null); setEditingDetailCategory(''); }}>Cancelar</Button>
+                      </div>
                     </form>
                   ) : (
                     <>
-                      <span className="font-medium dark:text-zinc-200">{g.name}</span>
+                      <div className="flex flex-col">
+                        <span className="font-medium dark:text-zinc-200">{g.name}</span>
+                        <span className="text-xs text-zinc-500 dark:text-zinc-400">Categoria: {g.category_name || 'Nenhuma'}</span>
+                      </div>
                       <div className="flex gap-1">
-                        <button onClick={() => setEditingGroup(g)} className="p-1 text-emerald-500 hover:text-emerald-700">
+                        <button onClick={() => { setEditingDetail(g); setEditingDetailCategory(g.category_name || ''); }} className="p-1 text-emerald-500 hover:text-emerald-700">
                           <Edit2 className="h-4 w-4" />
                         </button>
                         <button onClick={() => setConfirmModal({
                           isOpen: true,
-                          title: 'Excluir Grupo',
-                          message: `Deseja excluir o grupo "${g.name}"?`,
-                          onConfirm: () => sendWS('GROUP_DELETE', { id: g.id })
+                          title: 'Excluir Detalhe',
+                          message: `Deseja excluir o detalhe "${g.name}"?`,
+                          onConfirm: () => sendWS('DETAIL_DELETE', { id: g.id })
                         })} className="p-1 text-rose-500 hover:text-rose-700">
                           <Trash2 className="h-4 w-4" />
                         </button>
@@ -1246,9 +1385,10 @@ function CategoryGroupManager({ categories = [], groups = [], menu = [], sendWS 
   );
 }
 
-function ConfigTab({ users, settings, darkMode, setDarkMode, onRefreshUsers, onAddUser, onEditUser, currentUser, onSaveSettings, onResetHistory, categories = [], groups = [], sendWS, menu = [] }: any) {
+function ConfigTab({ users, settings, darkMode, setDarkMode, notificationsEnabled, setNotificationsEnabled, soundEnabled, setSoundEnabled, onRefreshUsers, onAddUser, onEditUser, currentUser, onUpdateCurrentUser, onSaveSettings, onResetHistory, categories = [], details = [], sendWS, menu = [] }: any) {
   const [isEditingHost, setIsEditingHost] = useState(false);
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, title: '', message: '', onConfirm: () => {} });
+  const [activeSection, setActiveSection] = useState<string | null>(null);
 
   const isHost = currentUser.role === 'host';
   const isAdmin = currentUser.role === 'admin';
@@ -1278,8 +1418,356 @@ function ConfigTab({ users, settings, darkMode, setDarkMode, onRefreshUsers, onA
     });
   };
 
+  const renderMenu = () => (
+    <div className="max-w-2xl mx-auto space-y-2">
+      <h2 className="text-2xl font-bold mb-6 dark:text-zinc-100">Configurações</h2>
+      
+      <button 
+        onClick={() => setActiveSection('account')}
+        className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
+      >
+        <div className="flex items-center gap-4">
+          <div className="p-2 rounded-xl bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400">
+            <UserIcon className="h-6 w-6" />
+          </div>
+          <div className="text-left">
+            <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Minha Conta</h3>
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">Alterar usuário e senha</p>
+          </div>
+        </div>
+        <ChevronRight className="h-5 w-5 text-zinc-400" />
+      </button>
+
+      <button 
+        onClick={() => setActiveSection('general')}
+        className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
+      >
+        <div className="flex items-center gap-4">
+          <div className="p-2 rounded-xl bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
+            <Settings className="h-6 w-6" />
+          </div>
+          <div className="text-left">
+            <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Geral</h3>
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">Tema e acesso</p>
+          </div>
+        </div>
+        <ChevronRight className="h-5 w-5 text-zinc-400" />
+      </button>
+
+      {(isHost || isAdmin) && (
+        <>
+          <button 
+            onClick={() => setActiveSection('users')}
+            className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
+          >
+            <div className="flex items-center gap-4">
+              <div className="p-2 rounded-xl bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400">
+                <Users className="h-6 w-6" />
+              </div>
+              <div className="text-left">
+                <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Usuários</h3>
+                <p className="text-sm text-zinc-500 dark:text-zinc-400">Gerenciar equipe e permissões</p>
+              </div>
+            </div>
+            <ChevronRight className="h-5 w-5 text-zinc-400" />
+          </button>
+
+          <button 
+            onClick={() => setActiveSection('categories')}
+            className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
+          >
+            <div className="flex items-center gap-4">
+              <div className="p-2 rounded-xl bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400">
+                <Tags className="h-6 w-6" />
+              </div>
+              <div className="text-left">
+                <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Categorias e Detalhes</h3>
+                <p className="text-sm text-zinc-500 dark:text-zinc-400">Organizar cardápio e opções</p>
+              </div>
+            </div>
+            <ChevronRight className="h-5 w-5 text-zinc-400" />
+          </button>
+        </>
+      )}
+
+      {isHost && (
+        <button 
+          onClick={() => setActiveSection('danger')}
+          className="w-full flex items-center justify-between p-4 rounded-2xl bg-rose-50 border border-rose-200 hover:bg-rose-100 transition-colors dark:bg-rose-900/10 dark:border-rose-900/30 dark:hover:bg-rose-900/20"
+        >
+          <div className="flex items-center gap-4">
+            <div className="p-2 rounded-xl bg-rose-100 text-rose-600 dark:bg-rose-900/50 dark:text-rose-400">
+              <AlertCircle className="h-6 w-6" />
+            </div>
+            <div className="text-left">
+              <h3 className="font-semibold text-rose-900 dark:text-rose-200">Ações de Limpeza</h3>
+              <p className="text-sm text-rose-700 dark:text-rose-400">Zerar histórico e dados</p>
+            </div>
+          </div>
+          <ChevronRight className="h-5 w-5 text-rose-400" />
+        </button>
+      )}
+    </div>
+  );
+
+  const renderSectionContent = () => {
+    switch (activeSection) {
+      case 'account':
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+              <form onSubmit={async (e) => {
+                e.preventDefault();
+                const formData = new FormData(e.currentTarget);
+                const username = formData.get('username') as string;
+                const password = formData.get('password') as string;
+                
+                try {
+                  const res = await fetch(`/api/users/${currentUser.id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', 'x-user-id': currentUser.id },
+                    body: JSON.stringify({ username, password: password || undefined, role: currentUser.role })
+                  });
+                  const data = await res.json();
+                  if (data.success) {
+                    toast.success('Dados atualizados com sucesso!');
+                    onRefreshUsers();
+                    onUpdateCurrentUser({ ...currentUser, username });
+                  } else {
+                    toast.error(data.message || 'Erro ao atualizar dados');
+                  }
+                } catch (error) {
+                  toast.error('Erro de conexão');
+                }
+              }} className="grid gap-4 md:grid-cols-2 items-end">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium dark:text-zinc-400">Usuário</label>
+                  <Input name="username" defaultValue={currentUser.username} required />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium dark:text-zinc-400">Nova Senha (deixe em branco para manter)</label>
+                  <Input name="password" type="password" placeholder="••••••••" />
+                </div>
+                <Button type="submit" className="md:col-span-2">Atualizar Meus Dados</Button>
+              </form>
+            </div>
+          </div>
+        );
+      case 'general':
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className={cn("p-2 rounded-lg", darkMode ? "bg-zinc-800 text-zinc-400" : "bg-zinc-100 text-zinc-600")}>
+                      {darkMode ? <Moon className="h-5 w-5" /> : <Sun className="h-5 w-5" />}
+                    </div>
+                    <div>
+                      <p className="font-medium dark:text-zinc-200">Modo Noturno</p>
+                      <p className="text-xs text-zinc-500">Alternar entre tema claro e escuro</p>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => setDarkMode(!darkMode)}
+                    className={cn(
+                      "relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2",
+                      darkMode ? 'bg-emerald-600' : 'bg-zinc-200'
+                    )}
+                  >
+                    <span className={cn(
+                      "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
+                      darkMode ? 'translate-x-6' : 'translate-x-1'
+                    )} />
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className={cn("p-2 rounded-lg", notificationsEnabled ? "bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400" : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400")}>
+                      <Bell className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <p className="font-medium dark:text-zinc-200">Notificações na Tela</p>
+                      <p className="text-xs text-zinc-500">Exibir alertas pop-up no sistema</p>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => setNotificationsEnabled(!notificationsEnabled)}
+                    className={cn(
+                      "relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2",
+                      notificationsEnabled ? 'bg-emerald-600' : 'bg-zinc-200'
+                    )}
+                  >
+                    <span className={cn(
+                      "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
+                      notificationsEnabled ? 'translate-x-6' : 'translate-x-1'
+                    )} />
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className={cn("p-2 rounded-lg", soundEnabled ? "bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400" : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400")}>
+                      <Volume2 className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <p className="font-medium dark:text-zinc-200">Som de Notificação</p>
+                      <p className="text-xs text-zinc-500">Tocar som ao receber alertas</p>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => setSoundEnabled(!soundEnabled)}
+                    className={cn(
+                      "relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2",
+                      soundEnabled ? 'bg-emerald-600' : 'bg-zinc-200'
+                    )}
+                  >
+                    <span className={cn(
+                      "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
+                      soundEnabled ? 'translate-x-6' : 'translate-x-1'
+                    )} />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      case 'users':
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+              {isHost && (
+                <div className="mb-8 border-b border-zinc-100 pb-8 dark:border-zinc-800">
+                  <h4 className="text-sm font-medium mb-4 dark:text-zinc-300">Acesso Geral</h4>
+                  <form onSubmit={(e) => {
+                    e.preventDefault();
+                    const formData = new FormData(e.currentTarget);
+                    onSaveSettings({
+                      service_fee: '10', // Fixed at 10%
+                      access_token: formData.get('access_token')
+                    });
+                    toast.success('Configurações salvas!');
+                  }} className="grid gap-4 md:grid-cols-2 items-end">
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium dark:text-zinc-400">Token de Acesso (Outros Usuários)</label>
+                      <div className="relative">
+                        <Input name="access_token" defaultValue={settings.access_token || '123456'} />
+                        <Edit2 className="absolute right-3 top-2.5 h-4 w-4 text-zinc-400 pointer-events-none" />
+                      </div>
+                    </div>
+                    <Button type="submit">Salvar Token</Button>
+                  </form>
+                </div>
+              )}
+
+              <div className="flex items-center justify-between mb-4">
+                <h4 className="text-sm font-medium dark:text-zinc-300">Equipe</h4>
+                <Button onClick={onAddUser} variant="outline"><UserPlus className="mr-2 h-4 w-4" /> Novo Usuário</Button>
+              </div>
+              <div className="rounded-xl border border-zinc-200 bg-white dark:bg-zinc-900 dark:border-zinc-800 divide-y divide-zinc-100 dark:divide-zinc-800">
+                {users.map((u: any) => (
+                  <div key={u.id} className="flex items-center justify-between p-4 sm:px-6 hover:bg-zinc-50/50 dark:hover:bg-zinc-800/50 transition-colors">
+                    <div>
+                      <p className="font-medium dark:text-zinc-200">{u.username}</p>
+                      <p className="text-xs sm:text-sm text-zinc-500 capitalize dark:text-zinc-400">
+                        {u.role === 'waiter' ? 'Garçom' : u.role === 'kitchen' ? 'Cozinha' : u.role}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1 sm:gap-2">
+                      {(u.role !== 'host' || isHost) && (
+                        <button 
+                          onClick={() => onEditUser(u)} 
+                          className="p-2 text-zinc-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 rounded-lg transition-colors"
+                          title="Editar"
+                        >
+                          <Edit2 className="h-4 w-4 sm:h-5 sm:w-5" />
+                        </button>
+                      )}
+                      {(u.username !== 'deckserrinha' && (u.role !== 'host' || isHost)) && (
+                        <button 
+                          onClick={() => deleteUser(u.id)} 
+                          className="p-2 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/30 rounded-lg transition-colors"
+                          title="Excluir"
+                        >
+                          <Trash2 className="h-4 w-4 sm:h-5 sm:w-5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      case 'categories':
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+              <CategoryDetailManager categories={categories} details={details} sendWS={sendWS} menu={menu} />
+            </div>
+          </div>
+        );
+      case 'danger':
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <section className="rounded-2xl border border-rose-100 bg-rose-50/30 p-6 shadow-sm dark:bg-rose-900/10 dark:border-rose-900/20">
+              <div className="flex items-center gap-2 mb-4">
+                <AlertCircle className="h-5 w-5 text-rose-600" />
+                <h3 className="text-lg font-semibold text-rose-900 dark:text-rose-200">Ações de Limpeza</h3>
+              </div>
+              <p className="mb-6 text-sm text-rose-700 dark:text-rose-300">Estas ações são permanentes e não podem ser desfeitas. Use com cautela.</p>
+              <Button 
+                variant="danger" 
+                className="w-full py-6"
+                onClick={() => {
+                  setConfirmModal({
+                    isOpen: true,
+                    title: 'Limpar Histórico',
+                    message: 'Deseja realmente limpar todo o histórico de movimentações? Esta ação não pode ser desfeita.',
+                    onConfirm: async () => {
+                      try {
+                          const res = await fetch('/api/admin/reset-history', { 
+                              method: 'POST',
+                              headers: { 'x-user-id': currentUser.id }
+                          });
+                          const data = await res.json();
+                          if (data.success) {
+                              toast.success('Histórico limpo!');
+                              onResetHistory(); // Call parent callback if needed, but WS handles update
+                          } else {
+                              toast.error(data.message || 'Erro ao limpar histórico');
+                          }
+                      } catch (error) {
+                          toast.error('Erro de conexão');
+                      }
+                    }
+                  });
+                }}
+              >
+                <Trash2 className="mr-2 h-4 w-4" /> Limpar Histórico
+              </Button>
+            </section>
+          </div>
+        );
+      default:
+        return null;
+    }
+  };
+
+  const getSectionTitle = () => {
+    switch (activeSection) {
+      case 'account': return 'Minha Conta';
+      case 'general': return 'Geral';
+      case 'users': return 'Usuários';
+      case 'categories': return 'Categorias e Detalhes';
+      case 'danger': return 'Ações de Limpeza';
+      default: return '';
+    }
+  };
+
   return (
-    <div className="max-w-4xl space-y-8">
+    <div className="max-w-4xl mx-auto">
       <ConfirmModal 
         isOpen={confirmModal.isOpen} 
         onClose={() => setConfirmModal({ ...confirmModal, isOpen: false })} 
@@ -1288,163 +1776,22 @@ function ConfigTab({ users, settings, darkMode, setDarkMode, onRefreshUsers, onA
         onConfirm={confirmModal.onConfirm} 
       />
 
-      <section className="space-y-4">
-        <h3 className="text-lg font-semibold dark:text-zinc-100">Configurações Gerais</h3>
-        <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
-          <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center gap-3">
-              <div className={cn("p-2 rounded-lg", darkMode ? "bg-zinc-800 text-zinc-400" : "bg-zinc-100 text-zinc-600")}>
-                {darkMode ? <Moon className="h-5 w-5" /> : <Sun className="h-5 w-5" />}
-              </div>
-              <div>
-                <p className="font-medium dark:text-zinc-200">Modo Noturno</p>
-                <p className="text-xs text-zinc-500">Alternar entre tema claro e escuro</p>
-              </div>
-            </div>
+      {activeSection === null ? (
+        renderMenu()
+      ) : (
+        <div className="space-y-6">
+          <div className="flex items-center gap-4">
             <button 
-              onClick={() => setDarkMode(!darkMode)}
-              className={cn(
-                "relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2",
-                darkMode ? 'bg-emerald-600' : 'bg-zinc-200'
-              )}
+              onClick={() => setActiveSection(null)}
+              className="p-2 -ml-2 rounded-full hover:bg-zinc-100 transition-colors dark:hover:bg-zinc-800 text-zinc-500 dark:text-zinc-400"
             >
-              <span className={cn(
-                "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
-                darkMode ? 'translate-x-6' : 'translate-x-1'
-              )} />
+              <ChevronLeft className="h-6 w-6" />
             </button>
+            <h2 className="text-2xl font-bold dark:text-zinc-100">{getSectionTitle()}</h2>
           </div>
-
-          {isHost && (
-            <div className="border-t border-zinc-100 pt-6 dark:border-zinc-800">
-              <h4 className="text-sm font-medium mb-4 dark:text-zinc-300">Acesso</h4>
-              <form onSubmit={(e) => {
-                e.preventDefault();
-                const formData = new FormData(e.currentTarget);
-                onSaveSettings({
-                  service_fee: '10', // Fixed at 10%
-                  access_token: formData.get('access_token')
-                });
-                toast.success('Configurações salvas!');
-              }} className="grid gap-4 md:grid-cols-2 items-end">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium dark:text-zinc-400">Token de Acesso (Outros Usuários)</label>
-                  <div className="relative">
-                    <Input name="access_token" defaultValue={settings.access_token || '123456'} />
-                    <Edit2 className="absolute right-3 top-2.5 h-4 w-4 text-zinc-400 pointer-events-none" />
-                  </div>
-                </div>
-                <Button type="submit">Salvar</Button>
-              </form>
-            </div>
-          )}
+          {renderSectionContent()}
         </div>
-      </section>
-
-      {(isHost || isAdmin) && (
-        <section className="space-y-4">
-          <details className="group rounded-2xl border border-zinc-200 bg-white shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
-            <summary className="flex cursor-pointer items-center justify-between p-6 font-semibold dark:text-zinc-100 marker:content-none select-none">
-              <h3 className="text-lg">Gerenciar Usuários</h3>
-              <ChevronRight className="h-5 w-5 transition-transform group-open:rotate-90" />
-            </summary>
-            <div className="border-t border-zinc-100 p-6 dark:border-zinc-800">
-              <div className="flex items-center justify-end mb-4">
-                <Button onClick={onAddUser} variant="outline"><UserPlus className="mr-2 h-4 w-4" /> Novo Usuário</Button>
-              </div>
-              <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:bg-zinc-900 dark:border-zinc-800">
-                <table className="w-full text-left text-sm">
-              <thead className="bg-zinc-50 text-zinc-500 uppercase text-[10px] font-bold tracking-wider dark:bg-zinc-800 dark:text-zinc-400">
-                <tr>
-                  <th className="px-6 py-3">Usuário</th>
-                  <th className="px-6 py-3">Cargo</th>
-                  <th className="px-6 py-3 text-right">Ações</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
-                {users.map((u: any) => (
-                  <tr key={u.id} className="hover:bg-zinc-50/50 dark:hover:bg-zinc-800/50">
-                    <td className="px-6 py-4 font-medium dark:text-zinc-200">{u.username}</td>
-                    <td className="px-6 py-4 capitalize dark:text-zinc-400">{u.role === 'waiter' ? 'Garçom' : u.role === 'kitchen' ? 'Cozinha' : u.role}</td>
-                    <td className="px-6 py-4 text-right">
-                      <div className="flex justify-end gap-2">
-                        {(u.role !== 'host' || isHost) && (
-                          <button onClick={() => onEditUser(u)} className="text-emerald-500 hover:text-emerald-700">
-                            <Edit2 className="h-4 w-4" />
-                          </button>
-                        )}
-                        {(u.username !== 'deckserrinha' && (u.role !== 'host' || isHost)) && (
-                          <button onClick={() => deleteUser(u.id)} className="text-rose-500 hover:text-rose-700">
-                            <Trash2 className="h-4 w-4" />
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-            </div>
-          </details>
-        </section>
       )}
-
-      {(isHost || isAdmin) && (
-        <section className="space-y-4">
-          <details className="group rounded-2xl border border-zinc-200 bg-white shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
-            <summary className="flex cursor-pointer items-center justify-between p-6 font-semibold dark:text-zinc-100 marker:content-none select-none">
-              <h3 className="text-lg">Categorias e Grupos</h3>
-              <ChevronRight className="h-5 w-5 transition-transform group-open:rotate-90" />
-            </summary>
-            <div className="border-t border-zinc-100 p-6 dark:border-zinc-800">
-              <CategoryGroupManager categories={categories} groups={groups} sendWS={sendWS} menu={menu} />
-            </div>
-          </details>
-        </section>
-      )}
-
-      <div className="grid gap-8 md:grid-cols-2">
-        {isHost && (
-          <section className="rounded-2xl border border-rose-100 bg-rose-50/30 p-6 shadow-sm dark:bg-rose-900/10 dark:border-rose-900/20">
-            <div className="flex items-center gap-2 mb-4">
-              <AlertCircle className="h-5 w-5 text-rose-600" />
-              <h3 className="text-lg font-semibold text-rose-900 dark:text-rose-200">Ações de Limpeza</h3>
-            </div>
-            <p className="mb-6 text-sm text-rose-700 dark:text-rose-300">Estas ações são permanentes e não podem ser desfeitas. Use com cautela.</p>
-            <Button 
-              variant="danger" 
-              className="w-full py-6"
-              onClick={() => {
-                setConfirmModal({
-                  isOpen: true,
-                  title: 'Limpar Histórico',
-                  message: 'Deseja realmente limpar todo o histórico de movimentações? Esta ação não pode ser desfeita.',
-                  onConfirm: async () => {
-                    try {
-                        const res = await fetch('/api/admin/reset-history', { 
-                            method: 'POST',
-                            headers: { 'x-user-id': currentUser.id }
-                        });
-                        const data = await res.json();
-                        if (data.success) {
-                            toast.success('Histórico limpo!');
-                            onResetHistory(); // Call parent callback if needed, but WS handles update
-                        } else {
-                            toast.error(data.message || 'Erro ao limpar histórico');
-                        }
-                    } catch (error) {
-                        toast.error('Erro de conexão');
-                    }
-                  }
-                });
-              }}
-            >
-              <Trash2 className="mr-2 h-4 w-4" /> Limpar Histórico
-            </Button>
-          </section>
-        )}
-      </div>
     </div>
   );
 }
@@ -1654,8 +2001,19 @@ function EditUserModal({ isOpen, onClose, user, onSuccess, currentUser }: any) {
   );
 }
 
-function EditMenuModal({ isOpen, onClose, onSave, item, categories = [], groups = [] }: any) {
+function EditMenuModal({ isOpen, onClose, onSave, item, categories = [], details = [] }: any) {
+  const [selectedCategory, setSelectedCategory] = useState(item?.type || '');
+
+  useEffect(() => {
+    if (item) {
+      setSelectedCategory(item.type || '');
+    }
+  }, [item]);
+
   if (!item) return null;
+
+  const filteredDetails = details.filter((d: any) => d.category_name === selectedCategory);
+
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Editar Produto">
       <form onSubmit={(e) => {
@@ -1682,16 +2040,23 @@ function EditMenuModal({ isOpen, onClose, onSave, item, categories = [], groups 
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-2">
             <label className="text-sm font-medium dark:text-zinc-300">Categoria</label>
-            <select name="type" defaultValue={item.type} className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100">
+            <select 
+              name="type" 
+              value={selectedCategory}
+              onChange={(e) => setSelectedCategory(e.target.value)}
+              className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100"
+            >
+              <option value="">Selecione...</option>
               {categories.map((c: any) => (
                 <option key={c.id} value={c.name}>{c.name}</option>
               ))}
             </select>
           </div>
           <div className="space-y-2">
-            <label className="text-sm font-medium dark:text-zinc-300">Grupo</label>
+            <label className="text-sm font-medium dark:text-zinc-300">Detalhe</label>
             <select name="category" defaultValue={item.category} className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100">
-              {groups.map((g: any) => (
+              <option value="">Selecione...</option>
+              {filteredDetails.map((g: any) => (
                 <option key={g.id} value={g.name}>{g.name}</option>
               ))}
             </select>
@@ -1712,7 +2077,17 @@ function EditMenuModal({ isOpen, onClose, onSave, item, categories = [], groups 
   );
 }
 
-function AddMenuModal({ isOpen, onClose, onSave, categories = [], groups = [] }: any) {
+function AddMenuModal({ isOpen, onClose, onSave, categories = [], details = [] }: any) {
+  const [selectedCategory, setSelectedCategory] = useState('');
+
+  useEffect(() => {
+    if (isOpen) {
+      setSelectedCategory('');
+    }
+  }, [isOpen]);
+
+  const filteredDetails = details.filter((d: any) => d.category_name === selectedCategory);
+
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Novo Produto">
       <form onSubmit={(e) => {
@@ -1738,16 +2113,23 @@ function AddMenuModal({ isOpen, onClose, onSave, categories = [], groups = [] }:
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-2">
             <label className="text-sm font-medium dark:text-zinc-300">Categoria</label>
-            <select name="type" className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100">
+            <select 
+              name="type" 
+              value={selectedCategory}
+              onChange={(e) => setSelectedCategory(e.target.value)}
+              className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100"
+            >
+              <option value="">Selecione...</option>
               {categories.map((c: any) => (
                 <option key={c.id} value={c.name}>{c.name}</option>
               ))}
             </select>
           </div>
           <div className="space-y-2">
-            <label className="text-sm font-medium dark:text-zinc-300">Grupo</label>
+            <label className="text-sm font-medium dark:text-zinc-300">Detalhe</label>
             <select name="category" className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100">
-              {groups.map((g: any) => (
+              <option value="">Selecione...</option>
+              {filteredDetails.map((g: any) => (
                 <option key={g.id} value={g.name}>{g.name}</option>
               ))}
             </select>
@@ -1768,10 +2150,10 @@ function AddMenuModal({ isOpen, onClose, onSave, categories = [], groups = [] }:
   );
 }
 
-function OrderModal({ isOpen, onClose, menu, categories = [], groups = [], onSend }: any) {
+function OrderModal({ isOpen, onClose, menu, categories = [], details = [], onSend }: any) {
   const [cart, setCart] = useState<any[]>([]);
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
-  const [activeGroup, setActiveGroup] = useState<string | null>(null);
+  const [activeDetail, setActiveDetail] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [editingObservation, setEditingObservation] = useState<string | null>(null);
   const [observationText, setObservationText] = useState("");
@@ -1780,7 +2162,7 @@ function OrderModal({ isOpen, onClose, menu, categories = [], groups = [], onSen
     if (isOpen) {
       setCart([]);
       setActiveCategory(null);
-      setActiveGroup(null);
+      setActiveDetail(null);
       setSearch("");
       setEditingObservation(null);
       setObservationText("");
@@ -1825,14 +2207,14 @@ function OrderModal({ isOpen, onClose, menu, categories = [], groups = [], onSen
       return item.name.toLowerCase().includes(search.toLowerCase());
     }
     const matchesCategory = activeCategory ? item.type === activeCategory : true;
-    const matchesGroup = activeGroup ? item.category === activeGroup : true;
-    return matchesCategory && matchesGroup;
+    const matchesDetail = activeDetail ? item.category === activeDetail : true;
+    return matchesCategory && matchesDetail;
   });
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Adicionar Pedido">
       <div className="flex flex-col gap-6 max-h-[70vh]">
-        <div className="flex-1 overflow-y-auto space-y-4 pr-2">
+        <div className="flex-1 overflow-y-auto overscroll-contain space-y-4 pr-2" style={{ WebkitOverflowScrolling: 'touch' }}>
           
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
@@ -1868,10 +2250,10 @@ function OrderModal({ isOpen, onClose, menu, categories = [], groups = [], onSen
             </div>
           ) : (
             <>
-              {(activeCategory || activeGroup) && (
+              {(activeCategory || activeDetail) && (
                 <div className="flex items-center gap-2 text-sm font-medium text-zinc-500 dark:text-zinc-400">
                   <button 
-                    onClick={() => { setActiveCategory(null); setActiveGroup(null); }} 
+                    onClick={() => { setActiveCategory(null); setActiveDetail(null); }} 
                     className="hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors"
                   >
                     Categorias
@@ -1880,17 +2262,17 @@ function OrderModal({ isOpen, onClose, menu, categories = [], groups = [], onSen
                     <>
                       <ChevronRight className="h-4 w-4" />
                       <button 
-                        onClick={() => setActiveGroup(null)} 
-                        className={cn("hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors", !activeGroup && "text-zinc-900 dark:text-zinc-100")}
+                        onClick={() => setActiveDetail(null)} 
+                        className={cn("hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors", !activeDetail && "text-zinc-900 dark:text-zinc-100")}
                       >
                         {activeCategory}
                       </button>
                     </>
                   )}
-                  {activeGroup && (
+                  {activeDetail && (
                     <>
                       <ChevronRight className="h-4 w-4" />
-                      <span className="text-zinc-900 dark:text-zinc-100">{activeGroup}</span>
+                      <span className="text-zinc-900 dark:text-zinc-100">{activeDetail}</span>
                     </>
                   )}
                 </div>
@@ -1918,15 +2300,15 @@ function OrderModal({ isOpen, onClose, menu, categories = [], groups = [], onSen
                     </div>
                   )}
                 </div>
-              ) : !activeGroup ? (
+              ) : !activeDetail ? (
                 <div className="grid grid-cols-2 gap-2">
-                  {groups.map((g: any) => {
+                  {details.filter((g: any) => g.category_name === activeCategory).map((g: any) => {
                     const count = menu.filter((m: any) => m.active !== 0 && m.type === activeCategory && m.category === g.name).length;
                     if (count === 0) return null;
                     return (
                       <button 
                         key={g.id} 
-                        onClick={() => setActiveGroup(g.name)}
+                        onClick={() => setActiveDetail(g.name)}
                         className="flex flex-col items-center justify-center gap-1 rounded-xl border border-zinc-200 bg-white p-2 shadow-sm transition-all hover:border-emerald-500 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-emerald-500"
                       >
                         <span className="text-sm font-bold text-zinc-900 dark:text-zinc-100">{g.name}</span>
@@ -1934,9 +2316,9 @@ function OrderModal({ isOpen, onClose, menu, categories = [], groups = [], onSen
                       </button>
                     );
                   })}
-                  {groups.filter((g: any) => menu.filter((m: any) => m.active !== 0 && m.type === activeCategory && m.category === g.name).length > 0).length === 0 && (
+                  {details.filter((g: any) => g.category_name === activeCategory && menu.filter((m: any) => m.active !== 0 && m.type === activeCategory && m.category === g.name).length > 0).length === 0 && (
                     <div className="col-span-full py-4 text-center text-sm text-zinc-500 dark:text-zinc-400">
-                      Nenhum grupo com itens disponíveis.
+                      Nenhum detalhe com itens disponíveis.
                     </div>
                   )}
                 </div>
@@ -1957,7 +2339,7 @@ function OrderModal({ isOpen, onClose, menu, categories = [], groups = [], onSen
                   ))}
                   {filteredMenu.length === 0 && (
                     <div className="py-4 text-center text-sm text-zinc-500 dark:text-zinc-400">
-                      Nenhum item nesta categoria e grupo.
+                      Nenhum item nesta categoria e detalhe.
                     </div>
                   )}
                 </div>
@@ -1968,7 +2350,7 @@ function OrderModal({ isOpen, onClose, menu, categories = [], groups = [], onSen
 
         <div className="border-t border-zinc-100 pt-4 space-y-4">
           <h4 className="text-xs font-bold uppercase text-zinc-400">Carrinho</h4>
-          <div className="space-y-2 max-h-40 overflow-y-auto">
+          <div className="space-y-2 max-h-40 overflow-y-auto overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
             {cart.map(item => (
               <div key={item.id} className="flex flex-col gap-2 rounded-lg bg-zinc-50 p-2 text-sm dark:bg-zinc-800">
                 <div className="flex items-center justify-between">
