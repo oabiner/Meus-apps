@@ -37,6 +37,8 @@ export interface OrderItem {
   timestamp: string;
   item_name?: string;
   item_price?: number;
+  category?: string;
+  group?: string;
 }
 
 export interface HistoryEvent {

@@ -37,10 +37,6 @@ import { Toaster, toast } from 'react-hot-toast';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { format } from 'date-fns';
-import { db, auth, googleProvider } from './firebase';
-import { handleSendWS, logHistory } from './firebase-logic';
-import { collection, onSnapshot, doc, setDoc, updateDoc, deleteDoc, getDocs, query, where, writeBatch, orderBy, limit } from 'firebase/firestore';
-import { signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
 import { 
   User, 
   Table, 
@@ -49,6 +45,8 @@ import {
   OrderItem, 
   WSEvent 
 } from './types';
+import { db } from '../firebase';
+import { doc, getDocFromServer } from 'firebase/firestore';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -240,7 +238,42 @@ export default function App() {
   const [isOrderModalOpen, setIsOrderModalOpen] = useState(false);
   const [isCloseTableModalOpen, setIsCloseTableModalOpen] = useState(false);
   const [isConfirmBillModalOpen, setIsConfirmBillModalOpen] = useState(false);
-  const [confirmModal, setConfirmModal] = useState<{
+  const [firebaseStatus, setFirebaseStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
+
+  useEffect(() => {
+    async function testConnection() {
+      let attempts = 0;
+      const maxAttempts = 3;
+      
+      while (attempts < maxAttempts) {
+        try {
+          // Wait a bit before testing to allow initialization
+          await new Promise(resolve => setTimeout(resolve, 1000 * (attempts + 1)));
+          
+          // Test connection to Firestore
+          await getDocFromServer(doc(db, 'test', 'connection'));
+          setFirebaseStatus('connected');
+          return;
+        } catch (error: any) {
+          attempts++;
+          console.warn(`Firebase connection test attempt ${attempts} failed:`, error);
+          
+          if (attempts === maxAttempts) {
+            console.error("Firebase connection test failed after max attempts:", error);
+            if (error.message && error.message.includes('offline')) {
+              setFirebaseStatus('error');
+            } else {
+              // If it's a permission error or something else, it might still be "connected" but restricted
+              setFirebaseStatus('connected');
+            }
+          }
+        }
+      }
+    }
+    testConnection();
+  }, []);
+
+  const [deleteOrderModal, setDeleteOrderModal] = useState<{
     isOpen: boolean;
     title: string;
     message: string;
@@ -252,6 +285,8 @@ export default function App() {
     onConfirm: () => {},
   });
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+  const socketRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
     if (darkMode) {
@@ -268,54 +303,117 @@ export default function App() {
     return allOrders.filter(o => o.table_id === selectedTable.id);
   }, [allOrders, selectedTable]);
 
-  const fetchUsers = () => { getDocs(collection(db, 'users')).then(s => setUsers(s.docs.map(d => d.data() as User))); };
-  const fetchOrders = () => { getDocs(collection(db, 'orders')).then(s => setAllOrders(s.docs.map(d => d.data() as any))); };
+  const fetchUsers = () => fetch('/api/users').then(res => res.json()).then(setUsers);
+  const fetchOrders = () => fetch('/api/orders').then(res => res.json()).then(setAllOrders);
 
   useEffect(() => {
     if (isLoggedIn) {
       fetchUsers();
       fetchOrders();
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(`${protocol}//${window.location.host}`);
+      socketRef.current = ws;
 
-      const unsubTables = onSnapshot(collection(db, 'tables'), (snapshot) => {
-        setTables(snapshot.docs.map(d => d.data() as any));
-      });
-      const unsubMenu = onSnapshot(collection(db, 'menu_items'), (snapshot) => {
-        setMenu(snapshot.docs.map(d => d.data() as any));
-      });
-      const unsubCategories = onSnapshot(collection(db, 'categories'), (snapshot) => {
-        setCategories(snapshot.docs.map(d => d.data() as any));
-      });
-      const unsubDetails = onSnapshot(collection(db, 'item_groups'), (snapshot) => {
-        setDetails(snapshot.docs.map(d => d.data() as any));
-      });
-      const unsubOrders = onSnapshot(collection(db, 'orders'), (snapshot) => {
-        setAllOrders(snapshot.docs.map(d => d.data() as any));
-      });
-      const qHistory = query(collection(db, 'history'), orderBy('timestamp', 'desc'), limit(100));
-      const unsubHistory = onSnapshot(qHistory, (snapshot) => {
-        setHistoryEvents(snapshot.docs.map(d => d.data() as any));
-      });
-      const unsubSettings = onSnapshot(collection(db, 'settings'), (snapshot) => {
-        const s = snapshot.docs.reduce((acc, d) => ({ ...acc, [d.id]: d.data().value }), {});
-        setSettings((prev: any) => ({ ...prev, ...s }));
-      });
+      ws.onmessage = (event) => {
+        const data: WSEvent = JSON.parse(event.data);
+        switch (data.type) {
+          case 'TABLES_SYNC':
+            setTables(data.payload);
+            fetchOrders();
+            break;
+          case 'TABLE_UPDATE':
+            if (!data.payload) break;
+            setTables(prev => prev.map(t => t.id === data.payload.id ? data.payload : t));
+            if (selectedTable?.id === data.payload.id) {
+              setSelectedTable(data.payload);
+            }
+            break;
+          case 'TABLE_CLOSE':
+            if (!data.payload) break;
+            setAllOrders(prev => prev.filter(o => o.table_id !== data.payload.tableId));
+            break;
+          case 'MENU_UPDATE':
+            setMenu(data.payload);
+            break;
+          case 'CATEGORIES_UPDATE':
+            setCategories(data.payload);
+            break;
+          case 'DETAILS_UPDATE':
+            setDetails(data.payload);
+            break;
+          case 'HISTORY_UPDATE':
+            setHistoryEvents(data.payload);
+            break;
+          case 'SETTINGS_UPDATE':
+            setSettings((prev: any) => ({ ...prev, ...data.payload }));
+            break;
+          case 'ORDER_UPDATE':
+            if (!data.payload) break;
+            setAllOrders(prev => prev.map(o => o.id === data.payload.id ? data.payload : o));
+            break;
+          case 'ORDER_NEW':
+            if (!data.payload) break;
+            setAllOrders(prev => [...prev, ...data.payload]);
+            break;
+          case 'ORDER_DELETED':
+            setAllOrders(prev => prev.filter(o => o.id !== data.payload.orderId));
+            break;
+          case 'NOTIFICATION':
+            if (notificationsEnabledRef.current) {
+              toast(data.payload.message, {
+                icon: data.payload.type === 'success' ? '✅' : data.payload.type === 'warning' ? '⚠️' : 'ℹ️',
+              });
+            }
+            if (soundEnabledRef.current) {
+              try {
+                const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+                if (AudioContext) {
+                  const ctx = new AudioContext();
+                  const playBeep = (time: number) => {
+                    const osc = ctx.createOscillator();
+                    const gainNode = ctx.createGain();
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(880, time);
+                    osc.frequency.exponentialRampToValueAtTime(440, time + 0.1);
+                    gainNode.gain.setValueAtTime(0.1, time);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, time + 0.1);
+                    osc.connect(gainNode);
+                    gainNode.connect(ctx.destination);
+                    osc.start(time);
+                    osc.stop(time + 0.1);
+                  };
 
-      return () => {
-        unsubTables();
-        unsubMenu();
-        unsubCategories();
-        unsubDetails();
-        unsubOrders();
-        unsubHistory();
-        unsubSettings();
+                  playBeep(ctx.currentTime);
+                  playBeep(ctx.currentTime + 0.15);
+                }
+              } catch (e) {
+                console.log('Audio play failed:', e);
+              }
+            }
+            break;
+          case 'FORCE_LOGOUT':
+            if (user?.role !== 'host') {
+              toast.error(data.payload.message);
+              setIsLoggedIn(false);
+              setUser(null);
+            }
+            break;
+        }
       };
+
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+      };
+
+      ws.onclose = () => {
+        console.log('WebSocket connection closed.');
+      };
+
+      return () => ws.close();
     }
   }, [isLoggedIn]);
 
-  const [loginTab, setLoginTab] = useState<'staff' | 'host'>('staff');
-  const [hostAction, setHostAction] = useState<'login' | 'register'>('login');
-
-  const handleStaffLogin = async (e: React.FormEvent<HTMLFormElement>) => {
+  const handleLogin = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
     const username = formData.get('username') as string;
@@ -323,118 +421,28 @@ export default function App() {
     const token = formData.get('token') as string;
 
     try {
-      const usersSnap = await getDocs(collection(db, 'users'));
-      
-      // Auto-create initial host user if database is completely empty
-      if (usersSnap.empty && username === 'deckserrinha' && password === 'deckappadmin') {
-        const newId = crypto.randomUUID();
-        const newUser = {
-          id: newId,
-          username: 'deckserrinha',
-          password: 'deckappadmin',
-          role: 'host',
-          email: 'deckbarserrinha@gmail.com'
-        };
-        await setDoc(doc(db, 'users', newId), newUser);
-        setUser(newUser as User);
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password, token }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setUser(data.user);
         setIsLoggedIn(true);
-        toast.success('Bem-vindo! Usuário inicial criado.');
-        return;
-      }
-
-      const userDoc = usersSnap.docs.find(d => d.data().username === username && d.data().password === password);
-      
-      if (userDoc) {
-        const userData = userDoc.data() as User;
-        if (userData.role !== 'host') {
-          const settingsSnap = await getDocs(collection(db, 'settings'));
-          const tokenDoc = settingsSnap.docs.find(d => d.id === 'access_token');
-          const serverToken = tokenDoc ? tokenDoc.data().value : '123456'; // Default token if not set
-          
-          if (token !== serverToken) {
-            toast.error('Token de acesso inválido');
-            return;
-          }
-        }
-        setUser(userData);
-        setIsLoggedIn(true);
-        toast.success('Bem-vindo!');
+        toast.success('Bem-vindo ao Deck Serrinha!');
       } else {
-        toast.error('Usuário ou senha incorretos');
-      }
-    } catch (err: any) {
-      console.error("Login error:", err);
-      toast.error('Erro: ' + (err.message || 'Falha ao conectar ao servidor'));
-    }
-  };
-
-  const processHostLogin = async (email: string | null) => {
-    if (!email) return;
-    try {
-      const usersSnap = await getDocs(collection(db, 'users'));
-      let userDoc = usersSnap.docs.find(d => d.data().email === email);
-
-      if (!userDoc && email === 'deckbarserrinha@gmail.com') {
-        const deckUser = usersSnap.docs.find(d => d.data().username === 'deckserrinha');
-        if (deckUser) {
-          await updateDoc(doc(db, 'users', deckUser.id), { email });
-          userDoc = deckUser;
-        }
-      }
-
-      if (userDoc) {
-        setUser({ ...userDoc.data(), id: userDoc.id } as User);
-        setIsLoggedIn(true);
-        toast.success('Bem-vindo!');
-      } else {
-        const newId = crypto.randomUUID();
-        const newUser = {
-          id: newId,
-          username: email.split('@')[0] || 'host',
-          role: 'host',
-          email: email,
-          restaurantId: newId
-        };
-        await setDoc(doc(db, 'users', newId), newUser);
-        setUser(newUser as User);
-        setIsLoggedIn(true);
-        toast.success('Novo restaurante criado com sucesso!');
+        toast.error(data.message);
       }
     } catch (err) {
-      toast.error('Erro ao processar login do host');
-    }
-  };
-
-  const handleGoogleLogin = async () => {
-    try {
-      const result = await signInWithPopup(auth, googleProvider);
-      await processHostLogin(result.user.email);
-    } catch (error: any) {
-      toast.error('Erro ao fazer login com Google: ' + error.message);
-    }
-  };
-
-  const handleEmailAuth = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const formData = new FormData(e.currentTarget);
-    const email = formData.get('email') as string;
-    const password = formData.get('password') as string;
-
-    try {
-      if (hostAction === 'register') {
-        const result = await createUserWithEmailAndPassword(auth, email, password);
-        await processHostLogin(result.user.email);
-      } else {
-        const result = await signInWithEmailAndPassword(auth, email, password);
-        await processHostLogin(result.user.email);
-      }
-    } catch (error: any) {
-      toast.error('Erro de autenticação: ' + error.message);
+      toast.error('Erro ao conectar ao servidor');
     }
   };
 
   const sendWS = (type: string, payload: any) => {
-    handleSendWS(type, payload);
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({ type, payload }));
+    }
   };
 
   // --- Auth View ---
@@ -454,85 +462,23 @@ export default function App() {
             <h1 className="text-3xl font-bold text-zinc-900 dark:text-zinc-100">Deck Serrinha</h1>
             <p className="text-zinc-500 dark:text-zinc-400">Sistema de Gestão de Restaurante</p>
           </div>
-
-          <div className="flex gap-2 mb-6 p-1 bg-zinc-100 dark:bg-zinc-800 rounded-lg">
-            <button 
-              onClick={() => setLoginTab('staff')}
-              className={cn("flex-1 py-2 text-sm font-medium rounded-md transition-colors", loginTab === 'staff' ? "bg-white dark:bg-zinc-700 shadow-sm text-zinc-900 dark:text-zinc-100" : "text-zinc-500 dark:text-zinc-400")}
-            >
-              Equipe
-            </button>
-            <button 
-              onClick={() => setLoginTab('host')}
-              className={cn("flex-1 py-2 text-sm font-medium rounded-md transition-colors", loginTab === 'host' ? "bg-white dark:bg-zinc-700 shadow-sm text-zinc-900 dark:text-zinc-100" : "text-zinc-500 dark:text-zinc-400")}
-            >
-              Restaurante (Host)
-            </button>
-          </div>
-
-          {loginTab === 'staff' ? (
-            <form onSubmit={handleStaffLogin} className="space-y-4">
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Login</label>
-                <Input name="username" placeholder="Seu usuário" required />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Senha</label>
-                <Input name="password" type="password" placeholder="Sua senha" required />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Token de Acesso</label>
-                <Input name="token" type="password" placeholder="Token do sistema (opcional para host)" />
-              </div>
-              <Button type="submit" className="w-full py-6 text-lg">
-                Entrar
-              </Button>
-            </form>
-          ) : (
-            <div className="space-y-4">
-              <Button type="button" variant="outline" onClick={handleGoogleLogin} className="w-full py-6 text-lg flex items-center justify-center gap-2">
-                <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
-                  <path d="M12.0003 4.75C13.7703 4.75 15.3553 5.36002 16.6053 6.54998L20.0303 3.125C17.9502 1.19 15.2353 0 12.0003 0C7.31028 0 3.25527 2.69 1.28027 6.60998L5.27028 9.70498C6.21525 6.86002 8.87028 4.75 12.0003 4.75Z" fill="#EA4335" />
-                  <path d="M23.49 12.275C23.49 11.49 23.415 10.73 23.3 10H12V14.51H18.47C18.18 15.99 17.34 17.25 16.08 18.1L19.945 21.1C22.2 19.01 23.49 15.92 23.49 12.275Z" fill="#4285F4" />
-                  <path d="M5.26498 14.2949C5.02498 13.5699 4.88501 12.7999 4.88501 11.9999C4.88501 11.1999 5.01998 10.4299 5.26498 9.7049L1.275 6.60986C0.46 8.22986 0 10.0599 0 11.9999C0 13.9399 0.46 15.7699 1.28 17.3899L5.26498 14.2949Z" fill="#FBBC05" />
-                  <path d="M12.0004 24.0001C15.2404 24.0001 17.9654 22.935 19.9454 21.095L16.0804 18.095C15.0054 18.82 13.6204 19.245 12.0004 19.245C8.8704 19.245 6.21537 17.135 5.26538 14.29L1.27539 17.385C3.25539 21.31 7.3104 24.0001 12.0004 24.0001Z" fill="#34A853" />
-                </svg>
-                Continuar com Google
-              </Button>
-              
-              <div className="relative">
-                <div className="absolute inset-0 flex items-center">
-                  <span className="w-full border-t border-zinc-200 dark:border-zinc-700" />
-                </div>
-                <div className="relative flex justify-center text-xs uppercase">
-                  <span className="bg-white dark:bg-zinc-900 px-2 text-zinc-500">Ou use seu email</span>
-                </div>
-              </div>
-
-              <form onSubmit={handleEmailAuth} className="space-y-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Email</label>
-                  <Input name="email" type="email" placeholder="seu@email.com" required />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Senha</label>
-                  <Input name="password" type="password" placeholder="Sua senha" required />
-                </div>
-                <Button type="submit" className="w-full py-6 text-lg">
-                  {hostAction === 'login' ? 'Entrar' : 'Criar Restaurante'}
-                </Button>
-                <div className="text-center">
-                  <button 
-                    type="button" 
-                    onClick={() => setHostAction(a => a === 'login' ? 'register' : 'login')}
-                    className="text-sm text-emerald-600 hover:underline"
-                  >
-                    {hostAction === 'login' ? 'Não tem conta? Crie seu restaurante' : 'Já tem conta? Faça login'}
-                  </button>
-                </div>
-              </form>
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Login</label>
+              <Input name="username" placeholder="Seu usuário" required />
             </div>
-          )}
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Senha</label>
+              <Input name="password" type="password" placeholder="Sua senha" required />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Token de Acesso (Se não for Host)</label>
+              <Input name="token" type="password" placeholder="Token do sistema" />
+            </div>
+            <Button type="submit" className="w-full py-6 text-lg">
+              Entrar
+            </Button>
+          </form>
         </motion.div>
       </div>
     );
@@ -548,7 +494,7 @@ export default function App() {
         "fixed inset-y-0 left-0 z-50 w-64 flex-col border-r border-zinc-200 bg-white transition-transform duration-300 md:relative md:translate-x-0 dark:bg-zinc-900 dark:border-zinc-800",
         isSidebarOpen ? "translate-x-0" : "-translate-x-full"
       )}>
-        <div className="flex h-14 items-center justify-between border-bottom border-zinc-100 px-4 dark:border-zinc-800">
+        <div className="flex h-[calc(3.5rem+env(safe-area-inset-top))] items-end justify-between border-bottom border-zinc-100 px-4 pb-3 dark:border-zinc-800">
           <div className="flex items-center">
             <UtensilsCrossed className="mr-2 h-5 w-5 text-emerald-600" />
             <span className="text-lg font-bold tracking-tight dark:text-zinc-100">Deck Serrinha</span>
@@ -630,8 +576,8 @@ export default function App() {
       )}
 
       {/* Main Content */}
-      <main className="flex flex-1 flex-col overflow-hidden overscroll-none">
-        <header className="flex h-14 items-center justify-between border-b border-zinc-200 bg-white px-4 md:px-6 dark:bg-zinc-900 dark:border-zinc-800">
+      <main className="flex flex-1 flex-col overflow-hidden overscroll-none touch-pan-y">
+        <header className="flex h-[calc(3.5rem+env(safe-area-inset-top))] items-end justify-between border-b border-zinc-200 bg-white px-4 pb-3 md:px-6 dark:bg-zinc-900 dark:border-zinc-800">
           <div className="flex items-center gap-4">
             <button onClick={() => setIsSidebarOpen(true)} className="md:hidden text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200">
               <MenuIcon className="h-5 w-5" />
@@ -639,6 +585,19 @@ export default function App() {
             <h2 className="text-base font-semibold capitalize dark:text-zinc-100">{activeTab}</h2>
           </div>
           <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <div className={cn(
+                "h-2 w-2 rounded-full",
+                firebaseStatus === 'connected' ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" :
+                firebaseStatus === 'connecting' ? "bg-amber-500 animate-pulse" :
+                "bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.5)]"
+              )} />
+              <span className="text-[10px] font-medium text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">
+                {firebaseStatus === 'connected' ? 'Nuvem OK' :
+                 firebaseStatus === 'connecting' ? 'Sincronizando...' :
+                 'Erro Nuvem'}
+              </span>
+            </div>
             {activeTab === 'mesas' && (
               <div className="flex items-center gap-2 text-[10px]">
                 <span className="flex items-center gap-1"><div className="h-1.5 w-1.5 rounded-full bg-zinc-200 dark:bg-zinc-700" /> <span className="dark:text-zinc-400">Livre</span></span>
@@ -649,7 +608,7 @@ export default function App() {
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto overscroll-contain p-4 md:p-6" style={{ WebkitOverflowScrolling: 'touch' }}>
+        <div className="flex-1 overflow-y-auto overscroll-none p-4 md:p-6" style={{ WebkitOverflowScrolling: 'touch' }}>
           {activeTab === 'mesas' && (
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
               {tables.map((table) => (
@@ -731,13 +690,18 @@ export default function App() {
               menu={menu}
               onResetHistory={async () => {
                 try {
-                  const historySnap = await getDocs(collection(db, 'history'));
-                  const batch = writeBatch(db);
-                  historySnap.forEach(d => batch.delete(d.ref));
-                  await batch.commit();
-                  toast.success('Histórico limpo!');
+                  const res = await fetch('/api/admin/reset-history', { 
+                    method: 'POST',
+                    headers: { 'x-user-id': user?.id || '' }
+                  });
+                  const data = await res.json();
+                  if (data.success) {
+                    toast.success('Histórico limpo!');
+                  } else {
+                    toast.error(data.message || 'Erro ao limpar histórico');
+                  }
                 } catch (error) {
-                  toast.error('Erro de conexão');
+                  toast.error('Erro de conexão ao limpar histórico');
                 }
               }}
             />
@@ -745,45 +709,930 @@ export default function App() {
         </div>
       </main>
 
-      <AddMenuModal 
-        isOpen={isAddMenuModalOpen} 
-        onClose={() => setIsAddMenuModalOpen(false)} 
-        onSave={(item: any) => sendWS('MENU_ADD', item)}
+      {/* Modals */}
+      <TableActionsModal 
+        isOpen={isTableModalOpen} 
+        onClose={() => setIsTableModalOpen(false)} 
+        table={selectedTable}
+        orders={currentOrders}
+        isHost={user?.role === 'host'}
+        onOpenTable={(data) => {
+          sendWS('TABLE_OPEN', { tableId: selectedTable?.id, userId: user?.id, username: user?.username, ...data });
+          setIsTableModalOpen(false);
+        }}
+        onUpdateTable={(data) => {
+          sendWS('TABLE_UPDATE_DATA', { tableId: selectedTable?.id, userId: user?.id, username: user?.username, ...data });
+        }}
+        onRequestBill={() => setIsConfirmBillModalOpen(true)}
+        onAddOrder={() => setIsOrderModalOpen(true)}
+        onCloseTable={() => setIsCloseTableModalOpen(true)}
+        onMarkRead={(orderId: string) => {
+          sendWS('ORDER_MARK_READ', { orderId, userId: user?.id, username: user?.username });
+        }}
+        onDeleteOrder={(orderId: string) => {
+          setDeleteOrderModal({
+            isOpen: true,
+            title: 'Excluir Pedido',
+            message: 'Tem certeza que deseja excluir este pedido?',
+            onConfirm: () => {
+              sendWS('ORDER_DELETE', { orderId, tableId: selectedTable?.id, userId: user?.id, username: user?.username });
+              setDeleteOrderModal(prev => ({ ...prev, isOpen: false }));
+            }
+          });
+        }}
+      />
+
+      <Modal isOpen={isConfirmBillModalOpen} onClose={() => setIsConfirmBillModalOpen(false)} title="Pedir Conta">
+        <div className="space-y-4">
+          <p className="text-zinc-600">Deseja realmente pedir a conta da Mesa {selectedTable?.number}?</p>
+          <div className="flex justify-end gap-3">
+            <Button variant="outline" onClick={() => setIsConfirmBillModalOpen(false)}>Cancelar</Button>
+            <Button onClick={() => {
+              sendWS('TABLE_REQUEST_BILL', { tableId: selectedTable?.id, userId: user?.id, username: user?.username });
+              setIsConfirmBillModalOpen(false);
+              setIsTableModalOpen(false);
+            }}>Confirmar</Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal isOpen={isCloseTableModalOpen} onClose={() => setIsCloseTableModalOpen(false)} title="Fechar Mesa">
+        <form onSubmit={(e) => {
+          e.preventDefault();
+          const formData = new FormData(e.currentTarget);
+          const methods = formData.getAll('payment') as string[];
+          if (methods.length === 0) return toast.error('Selecione ao menos uma forma de pagamento');
+          sendWS('TABLE_CLOSE', { tableId: selectedTable?.id, userId: user?.id, username: user?.username, paymentMethods: methods });
+          setIsCloseTableModalOpen(false);
+          setIsTableModalOpen(false);
+        }} className="space-y-4">
+          <div className="rounded-xl bg-emerald-50 p-4 border border-emerald-100 dark:bg-emerald-900/20 dark:border-emerald-800">
+            {(() => {
+              const subtotal = currentOrders.reduce((acc, o) => acc + (o.item_price || 0) * o.quantity, 0);
+              const serviceFee = parseFloat(settings.service_fee || '10');
+              const service = subtotal * (serviceFee / 100);
+              const total = subtotal + service;
+              const perPerson = selectedTable?.people_count ? total / selectedTable.people_count : total;
+              
+              return (
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between text-emerald-700 dark:text-emerald-300">
+                    <span>Subtotal:</span>
+                    <span className="font-bold">R$ {subtotal.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between text-emerald-700 dark:text-emerald-300">
+                    <span>Serviço ({serviceFee}%):</span>
+                    <span className="font-bold">R$ {service.toFixed(2)}</span>
+                  </div>
+                  <div className="border-t border-emerald-200 pt-2 flex justify-between text-lg font-bold text-emerald-900 dark:border-emerald-800 dark:text-emerald-100">
+                    <span>Total:</span>
+                    <span>R$ {total.toFixed(2)}</span>
+                  </div>
+                  {selectedTable?.people_count && selectedTable.people_count > 1 && (
+                    <div className="border-t border-emerald-200 border-dashed pt-2 flex justify-between text-xs italic text-emerald-600 dark:border-emerald-800 dark:text-emerald-400">
+                      <span>Divisão ({selectedTable.people_count} pessoas):</span>
+                      <span>R$ {perPerson.toFixed(2)} por pessoa</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+          <p className="text-zinc-600 text-sm dark:text-zinc-400">Selecione as formas de pagamento:</p>
+          <div className="grid grid-cols-2 gap-3">
+            {['Dinheiro', 'Pix', 'Crédito', 'Débito'].map(method => (
+              <label key={method} className="flex items-center gap-2 rounded-lg border border-zinc-200 p-3 hover:bg-zinc-50 cursor-pointer dark:border-zinc-700 dark:hover:bg-zinc-800">
+                <input type="checkbox" name="payment" value={method} className="h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500" />
+                <span className="text-sm font-medium dark:text-zinc-200">{method}</span>
+              </label>
+            ))}
+          </div>
+          <div className="flex justify-end gap-3 pt-4">
+            <Button type="button" variant="outline" onClick={() => setIsCloseTableModalOpen(false)}>Cancelar</Button>
+            <Button type="submit" variant="danger">Confirmar Fechamento</Button>
+          </div>
+        </form>
+      </Modal>
+
+      <OrderModal 
+        isOpen={isOrderModalOpen} 
+        onClose={() => setIsOrderModalOpen(false)} 
+        menu={menu}
         categories={categories}
         details={details}
+        onSend={(items) => {
+          sendWS('ORDER_SEND', { tableId: selectedTable?.id, userId: user?.id, username: user?.username, items });
+          setIsOrderModalOpen(false);
+        }}
       />
-      <EditMenuModal 
-        isOpen={isEditMenuModalOpen} 
-        onClose={() => setIsEditMenuModalOpen(false)} 
-        item={editingMenuItem} 
-        onSave={(item: any) => sendWS('MENU_EDIT', item)}
-        categories={categories}
-        details={details}
-      />
+
       <AddUserModal 
         isOpen={isAddUserModalOpen} 
         onClose={() => setIsAddUserModalOpen(false)} 
         onSuccess={fetchUsers}
         currentUser={user}
       />
+      
       <EditUserModal 
         isOpen={isEditUserModalOpen} 
-        onClose={() => setIsEditUserModalOpen(false)} 
-        user={editingUser} 
+        onClose={() => {
+          setIsEditUserModalOpen(false);
+          setEditingUser(null);
+        }} 
+        user={editingUser}
         onSuccess={fetchUsers}
         currentUser={user}
       />
-      <TableModal 
-        isOpen={isTableModalOpen} 
-        onClose={() => setIsTableModalOpen(false)} 
-        table={selectedTable} 
-        menu={menu} 
+      
+      <AddMenuModal 
+        isOpen={isAddMenuModalOpen} 
+        onClose={() => setIsAddMenuModalOpen(false)} 
+        onSave={(data) => sendWS('MENU_ADD', data)}
         categories={categories}
         details={details}
-        sendWS={sendWS} 
-        userId={user?.id}
-        username={user?.username}
       />
+
+      <EditMenuModal 
+        isOpen={isEditMenuModalOpen} 
+        onClose={() => {
+          setIsEditMenuModalOpen(false);
+          setEditingMenuItem(null);
+        }} 
+        onSave={(data: any) => sendWS('MENU_EDIT', data)}
+        item={editingMenuItem}
+        categories={categories}
+        details={details}
+      />
+
+      <Modal
+        isOpen={deleteOrderModal.isOpen}
+        onClose={() => setDeleteOrderModal(prev => ({ ...prev, isOpen: false }))}
+        title={deleteOrderModal.title}
+        zIndex={60}
+      >
+        <div className="space-y-6">
+          <p className="text-zinc-600 dark:text-zinc-300">{deleteOrderModal.message}</p>
+          <div className="flex justify-end gap-3">
+            <Button 
+              variant="ghost" 
+              onClick={() => setDeleteOrderModal(prev => ({ ...prev, isOpen: false }))}
+            >
+              Cancelar
+            </Button>
+            <Button 
+              variant="danger" 
+              onClick={deleteOrderModal.onConfirm}
+            >
+              Confirmar
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
+// --- Sub-components ---
+
+function SidebarItem({ icon, label, active, onClick }: { icon: React.ReactNode; label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        'flex w-full items-center rounded-lg px-3 py-2 text-sm font-medium transition-all',
+        active 
+          ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' 
+          : 'text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-200'
+      )}
+    >
+      <span className={cn('mr-3 h-5 w-5', active ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-400')}>
+        {React.cloneElement(icon as React.ReactElement, { className: 'h-5 w-5' })}
+      </span>
+      {label}
+    </button>
+  );
+}
+
+function TableActionsModal({ isOpen, onClose, table, orders, isHost, onOpenTable, onRequestBill, onAddOrder, onCloseTable, onMarkRead, onUpdateTable, onDeleteOrder }: any) {
+  const [isEditing, setIsEditing] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) setIsEditing(false);
+  }, [isOpen]);
+
+  if (!table) return null;
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title={`Mesa ${table.number}`}>
+      <div className="space-y-6">
+        {table.status === 'free' ? (
+          <form onSubmit={(e) => {
+            e.preventDefault();
+            const formData = new FormData(e.currentTarget);
+            onOpenTable({
+              customerName: formData.get('name'),
+              peopleCount: parseInt(formData.get('people') as string) || 0
+            });
+          }} className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium dark:text-zinc-300">Nome do Cliente (Opcional)</label>
+              <Input name="name" placeholder="Ex: João Silva" />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium dark:text-zinc-300">Quantidade de Pessoas</label>
+              <Input name="people" type="number" placeholder="1" />
+            </div>
+            <Button type="submit" className="w-full">Abrir Mesa</Button>
+          </form>
+        ) : (
+          <div className="space-y-4">
+            <div className="rounded-xl bg-zinc-50 p-4 dark:bg-zinc-800">
+              {!isEditing ? (
+                <>
+                  <div className="flex justify-between text-sm items-center">
+                    <span className="text-zinc-500 dark:text-zinc-400">Cliente:</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold dark:text-zinc-200">{table.customer_name || 'Não informado'}</span>
+                      <button onClick={() => setIsEditing(true)} className="text-emerald-600 hover:text-emerald-700 dark:text-emerald-400">
+                        <Edit2 className="h-3 w-3" />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="mt-2 flex justify-between text-sm">
+                    <span className="text-zinc-500 dark:text-zinc-400">Pessoas:</span>
+                    <span className="font-semibold dark:text-zinc-200">{table.people_count || 0}</span>
+                  </div>
+                  <div className="mt-2 flex justify-between text-sm">
+                    <span className="text-zinc-500 dark:text-zinc-400">Aberta em:</span>
+                    <span className="font-semibold dark:text-zinc-200">{table.opened_at ? format(new Date(table.opened_at), 'HH:mm') : '-'}</span>
+                  </div>
+                </>
+              ) : (
+                <form onSubmit={(e) => {
+                  e.preventDefault();
+                  const formData = new FormData(e.currentTarget);
+                  onUpdateTable({
+                    customerName: formData.get('name'),
+                    peopleCount: parseInt(formData.get('people') as string) || 0
+                  });
+                  setIsEditing(false);
+                }} className="space-y-3">
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium dark:text-zinc-300">Nome</label>
+                    <Input name="name" defaultValue={table.customer_name} className="h-8 text-sm" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium dark:text-zinc-300">Pessoas</label>
+                    <Input name="people" type="number" defaultValue={table.people_count} className="h-8 text-sm" />
+                  </div>
+                  <div className="flex gap-2 pt-1">
+                    <Button type="submit" className="h-8 text-xs flex-1">Salvar</Button>
+                    <Button type="button" variant="ghost" onClick={() => setIsEditing(false)} className="h-8 text-xs">Cancelar</Button>
+                  </div>
+                </form>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <h4 className="text-xs font-bold uppercase text-zinc-400">Pedidos Atuais</h4>
+              <div className="max-h-40 overflow-y-auto overscroll-contain rounded-lg border border-zinc-100 bg-white dark:bg-zinc-900 dark:border-zinc-800" style={{ WebkitOverflowScrolling: 'touch' }}>
+                {orders.length === 0 ? (
+                  <p className="p-4 text-center text-xs text-zinc-400 dark:text-zinc-500">Nenhum pedido realizado</p>
+                ) : (
+                  <div className="divide-y divide-zinc-50 dark:divide-zinc-800">
+                    {orders.map((order: any) => (
+                      <div key={order.id} className="flex flex-col p-3 text-sm">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <span className="dark:text-zinc-200">
+                              {order.quantity}x {order.item_name}
+                              {(order.category || order.group) && (
+                                <span className="text-xs text-zinc-500 dark:text-zinc-400 ml-2">
+                                  ({[order.category, order.group].filter(Boolean).join(' - ')})
+                                </span>
+                              )}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-zinc-400 dark:text-zinc-500">{format(new Date(order.timestamp), 'HH:mm')}</span>
+                            <button 
+                              onClick={() => onDeleteOrder(order.id)} 
+                              className="text-rose-500 hover:bg-rose-50 p-1 rounded dark:hover:bg-rose-900/20 transition-colors"
+                              title="Excluir pedido"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </div>
+                        {order.observation && (
+                          <div className="text-xs text-zinc-500 dark:text-zinc-400 italic mt-1">
+                            Obs: {order.observation}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3">
+              <Button onClick={onAddOrder} variant="outline" className="justify-start">
+                <Plus className="mr-2 h-4 w-4" /> Adicionar Pedido
+              </Button>
+              <Button onClick={onRequestBill} variant="outline" className="justify-start text-amber-600 hover:bg-amber-50">
+                <DollarSign className="mr-2 h-4 w-4" /> Pedir Conta
+              </Button>
+              <Button onClick={onCloseTable} variant="danger" className="justify-start">
+                <CheckCircle2 className="mr-2 h-4 w-4" /> Fechar Mesa
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function MenuTab({ menu, categories = [], details = [], canEdit, onAdd, onEdit, onWS }: any) {
+  const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const [activeGroup, setActiveGroup] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [confirmModal, setConfirmModal] = useState({ isOpen: false, title: '', message: '', onConfirm: () => {} });
+
+  const filteredMenu = menu.filter((item: any) => {
+    if (search) {
+      return item.name.toLowerCase().includes(search.toLowerCase());
+    }
+    const matchesCategory = activeCategory ? item.type === activeCategory : true;
+    const matchesGroup = activeGroup ? item.category === activeGroup : true;
+    return matchesCategory && matchesGroup;
+  });
+
+  const handleDownload = () => {
+    window.location.href = '/api/menu/export';
+  };
+
+  const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const content = JSON.parse(event.target?.result as string);
+        const res = await fetch('/api/menu/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(content)
+        });
+        if (res.ok) {
+          toast.success('Cardápio importado com sucesso!');
+        } else {
+          toast.error('Erro ao importar cardápio');
+        }
+      } catch (err) {
+        toast.error('Arquivo inválido');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = ''; // Reset input
+  };
+
+  const renderItemCard = (item: any) => (
+    <div key={item.id} className={cn(
+      "group relative flex items-center justify-between border-b border-zinc-100 bg-white py-2 px-3 transition-colors hover:bg-zinc-50 dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50 last:border-0",
+      item.active === 0 && "opacity-60 bg-zinc-50 dark:bg-zinc-800/50"
+    )}>
+      <div className="flex items-center gap-3 flex-1">
+        <div className="flex-1">
+          <div className="flex items-center gap-2">
+            <h4 className="font-semibold text-sm text-zinc-900 dark:text-zinc-100">{item.name}</h4>
+            {item.active === 0 && <span className="rounded bg-zinc-200 px-1.5 py-0.5 text-[9px] font-bold text-zinc-600 dark:bg-zinc-700 dark:text-zinc-400">INATIVO</span>}
+          </div>
+          <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">{item.category} • R$ {item.price.toFixed(2)}</p>
+        </div>
+      </div>
+      {canEdit && (
+        <div className="flex gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+          <button onClick={() => onEdit(item)} className="rounded p-1.5 text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20">
+            <Edit2 className="h-3.5 w-3.5" />
+          </button>
+          <button onClick={() => {
+            setConfirmModal({
+              isOpen: true,
+              title: 'Excluir Item',
+              message: `Deseja realmente excluir ${item.name}?`,
+              onConfirm: () => {
+                onWS('MENU_DELETE', { id: item.id });
+                setConfirmModal({ ...confirmModal, isOpen: false });
+              }
+            });
+          }} className="rounded p-1.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20">
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="space-y-6">
+      <ConfirmModal 
+        isOpen={confirmModal.isOpen} 
+        onClose={() => setConfirmModal({ ...confirmModal, isOpen: false })} 
+        title={confirmModal.title} 
+        message={confirmModal.message} 
+        onConfirm={confirmModal.onConfirm} 
+      />
+      
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div className="flex flex-1 gap-2">
+          <Input 
+            placeholder="Buscar no cardápio..." 
+            className="max-w-xs" 
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        {canEdit && (
+          <div className="flex flex-wrap gap-2">
+            <input 
+              type="file" 
+              id="menu-upload" 
+              className="hidden" 
+              accept=".json" 
+              onChange={handleUpload} 
+            />
+            <Button variant="outline" onClick={() => document.getElementById('menu-upload')?.click()}>
+              <Upload className="mr-2 h-4 w-4" /> Importar
+            </Button>
+            <Button variant="outline" onClick={handleDownload}>
+              <Download className="mr-2 h-4 w-4" /> Exportar
+            </Button>
+            <Button onClick={onAdd}><Plus className="mr-2 h-4 w-4" /> Novo Produto</Button>
+          </div>
+        )}
+      </div>
+
+      {!search && (activeCategory || activeGroup) && (
+        <div className="flex items-center gap-2 text-sm font-medium text-zinc-500 dark:text-zinc-400">
+          <button 
+            onClick={() => { setActiveCategory(null); setActiveGroup(null); }} 
+            className="hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors"
+          >
+            Categorias
+          </button>
+          {activeCategory && (
+            <>
+              <ChevronRight className="h-4 w-4" />
+              <button 
+                onClick={() => setActiveGroup(null)} 
+                className={cn("hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors", !activeGroup && "text-zinc-900 dark:text-zinc-100")}
+              >
+                {activeCategory}
+              </button>
+            </>
+          )}
+          {activeGroup && (
+            <>
+              <ChevronRight className="h-4 w-4" />
+              <span className="text-zinc-900 dark:text-zinc-100">{activeGroup}</span>
+            </>
+          )}
+        </div>
+      )}
+
+      {search ? (
+        <div className="rounded-xl border border-zinc-200 overflow-hidden dark:border-zinc-800">
+          {filteredMenu.map(renderItemCard)}
+          {filteredMenu.length === 0 && (
+            <div className="py-12 text-center text-zinc-500 dark:text-zinc-400">
+              Nenhum item encontrado para "{search}".
+            </div>
+          )}
+        </div>
+      ) : (
+        <>
+          {!activeCategory ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+              {categories.map((c: any) => {
+                const count = menu.filter((m: any) => m.type === c.name).length;
+                if (count === 0) return null;
+                return (
+                  <button 
+                    key={c.id} 
+                    onClick={() => setActiveCategory(c.name)}
+                    className="flex flex-col items-center justify-center gap-1 rounded-xl border border-zinc-200 bg-white p-3 shadow-sm transition-all hover:border-emerald-500 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-emerald-500"
+                  >
+                    <span className="text-lg font-bold text-zinc-900 dark:text-zinc-100">{c.name}</span>
+                    <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">{count} itens</span>
+                  </button>
+                );
+              })}
+              {categories.filter((c: any) => menu.filter((m: any) => m.type === c.name).length > 0).length === 0 && (
+                <div className="col-span-full py-12 text-center text-zinc-500 dark:text-zinc-400">
+                  Nenhuma categoria com itens cadastrados.
+                </div>
+              )}
+            </div>
+          ) : !activeGroup ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+              {details.filter((g: any) => g.category_name === activeCategory).map((g: any) => {
+                const count = menu.filter((m: any) => m.type === activeCategory && m.category === g.name).length;
+                if (count === 0) return null;
+                return (
+                  <button 
+                    key={g.id} 
+                    onClick={() => setActiveGroup(g.name)}
+                    className="flex flex-col items-center justify-center gap-1 rounded-xl border border-zinc-200 bg-white p-3 shadow-sm transition-all hover:border-emerald-500 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-emerald-500"
+                  >
+                    <span className="text-lg font-bold text-zinc-900 dark:text-zinc-100">{g.name}</span>
+                    <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">{count} itens</span>
+                  </button>
+                );
+              })}
+              {details.filter((g: any) => g.category_name === activeCategory && menu.filter((m: any) => m.type === activeCategory && m.category === g.name).length > 0).length === 0 && (
+                <div className="col-span-full py-12 text-center text-zinc-500 dark:text-zinc-400">
+                  Nenhum detalhe com itens cadastrados.
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-zinc-200 overflow-hidden dark:border-zinc-800">
+              {filteredMenu.map(renderItemCard)}
+              {filteredMenu.length === 0 && (
+                <div className="py-12 text-center text-zinc-500 dark:text-zinc-400">
+                  Nenhum item nesta categoria e detalhe.
+                </div>
+              )}
+            </div>
+          )}
+
+          {(!activeCategory || !activeGroup) && (
+            <>
+              <div className="my-8 border-t border-zinc-200 dark:border-zinc-800" />
+              <div className="mb-4 flex items-center justify-between">
+                <h3 className="text-lg font-bold text-zinc-900 dark:text-zinc-100">Todos os Itens</h3>
+              </div>
+              <div className="rounded-xl border border-zinc-200 overflow-hidden dark:border-zinc-800">
+                {menu.map(renderItemCard)}
+                {menu.length === 0 && (
+                  <div className="py-12 text-center text-zinc-500 dark:text-zinc-400">
+                    Nenhum item cadastrado.
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+
+function ConfirmModal({ isOpen, onClose, onConfirm, title, message }: any) {
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title={title}>
+      <div className="space-y-4">
+        <p className="text-zinc-600 dark:text-zinc-300">{message}</p>
+        <div className="flex justify-end gap-3">
+          <Button variant="outline" onClick={onClose}>Cancelar</Button>
+          <Button variant="danger" onClick={() => { onConfirm(); onClose(); }}>Confirmar</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function CategoryDetailManager({ categories = [], details = [], menu = [], sendWS }: any) {
+  const [newCat, setNewCat] = useState('');
+  const [newDetail, setNewDetail] = useState('');
+  const [newDetailCategory, setNewDetailCategory] = useState('');
+  const [editingCat, setEditingCat] = useState<any>(null);
+  const [editingDetail, setEditingDetail] = useState<any>(null);
+  const [editingDetailCategory, setEditingDetailCategory] = useState('');
+  const [confirmModal, setConfirmModal] = useState({ isOpen: false, title: '', message: '', onConfirm: () => {} });
+
+  return (
+    <div className="space-y-6">
+      <ConfirmModal 
+        isOpen={confirmModal.isOpen} 
+        onClose={() => setConfirmModal({ ...confirmModal, isOpen: false })} 
+        title={confirmModal.title} 
+        message={confirmModal.message} 
+        onConfirm={confirmModal.onConfirm} 
+      />
+      <div className="grid gap-6 md:grid-cols-2">
+        {/* Categories */}
+        <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+          <h4 className="text-md font-semibold mb-4 dark:text-zinc-100">Categorias</h4>
+          <form onSubmit={(e) => {
+            e.preventDefault();
+            if (newCat.trim()) {
+              sendWS('CATEGORY_ADD', { name: newCat.trim() });
+              setNewCat('');
+            }
+          }} className="flex gap-2 mb-4">
+            <Input value={newCat} onChange={(e: any) => setNewCat(e.target.value)} placeholder="Nova categoria..." />
+            <Button type="submit">Adicionar</Button>
+          </form>
+          <ul className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
+            {categories.map((c: any) => {
+              const catItems = menu.filter((m: any) => m.type === c.name);
+              return (
+              <li key={c.id} className="flex flex-col gap-2 p-3 rounded-xl border border-zinc-100 bg-zinc-50 dark:bg-zinc-800/50 dark:border-zinc-800">
+                <div className="flex items-center justify-between">
+                  {editingCat?.id === c.id ? (
+                    <form onSubmit={(e) => {
+                      e.preventDefault();
+                      if (editingCat.name.trim()) {
+                        sendWS('CATEGORY_EDIT', { id: c.id, name: editingCat.name.trim() });
+                        setEditingCat(null);
+                      }
+                    }} className="flex gap-2 w-full">
+                      <Input autoFocus value={editingCat.name} onChange={(e: any) => setEditingCat({ ...editingCat, name: e.target.value })} />
+                      <Button type="submit" className="px-2 py-1 h-auto text-xs">Salvar</Button>
+                      <Button type="button" variant="outline" className="px-2 py-1 h-auto text-xs" onClick={() => setEditingCat(null)}>Cancelar</Button>
+                    </form>
+                  ) : (
+                    <>
+                      <span className="font-medium dark:text-zinc-200">{c.name}</span>
+                      <div className="flex gap-1">
+                        <button onClick={() => setEditingCat(c)} className="p-1 text-emerald-500 hover:text-emerald-700">
+                          <Edit2 className="h-4 w-4" />
+                        </button>
+                        <button onClick={() => setConfirmModal({
+                          isOpen: true,
+                          title: 'Excluir Categoria',
+                          message: `Deseja excluir a categoria "${c.name}"?`,
+                          onConfirm: () => sendWS('CATEGORY_DELETE', { id: c.id })
+                        })} className="p-1 text-rose-500 hover:text-rose-700">
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </li>
+            )})}
+          </ul>
+        </div>
+
+        {/* Grupos */}
+        <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+          <h4 className="text-md font-semibold mb-4 dark:text-zinc-100">Grupos</h4>
+          <form onSubmit={(e) => {
+            e.preventDefault();
+            if (newDetail.trim() && newDetailCategory) {
+              sendWS('DETAIL_ADD', { name: newDetail.trim(), category_name: newDetailCategory });
+              setNewDetail('');
+              setNewDetailCategory('');
+            } else {
+              toast.error("Preencha o nome e selecione uma categoria");
+            }
+          }} className="flex flex-col gap-2 mb-4">
+            <div className="flex gap-2">
+              <Input value={newDetail} onChange={(e: any) => setNewDetail(e.target.value)} placeholder="Novo grupo..." />
+              <select
+                value={newDetailCategory}
+                onChange={(e) => setNewDetailCategory(e.target.value)}
+                className="flex h-10 w-full items-center justify-between rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm ring-offset-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-zinc-950 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:ring-offset-zinc-950 dark:placeholder:text-zinc-400 dark:focus:ring-zinc-300"
+              >
+                <option value="">Selecione uma categoria...</option>
+                {categories.map((c: any) => (
+                  <option key={c.id} value={c.name}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+            <Button type="submit" className="w-full">Adicionar</Button>
+          </form>
+          <ul className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
+            {details.map((g: any) => {
+              const detailItems = menu.filter((m: any) => m.category === g.name);
+              return (
+              <li key={g.id} className="flex flex-col gap-2 p-3 rounded-xl border border-zinc-100 bg-zinc-50 dark:bg-zinc-800/50 dark:border-zinc-800">
+                <div className="flex items-center justify-between">
+                  {editingDetail?.id === g.id ? (
+                    <form onSubmit={(e) => {
+                      e.preventDefault();
+                      if (editingDetail.name.trim() && editingDetailCategory) {
+                        sendWS('DETAIL_EDIT', { id: g.id, name: editingDetail.name.trim(), category_name: editingDetailCategory });
+                        setEditingDetail(null);
+                        setEditingDetailCategory('');
+                      } else {
+                        toast.error("Preencha o nome e selecione uma categoria");
+                      }
+                    }} className="flex flex-col gap-2 w-full">
+                      <div className="flex gap-2">
+                        <Input autoFocus value={editingDetail.name} onChange={(e: any) => setEditingDetail({ ...editingDetail, name: e.target.value })} />
+                        <select
+                          value={editingDetailCategory}
+                          onChange={(e) => setEditingDetailCategory(e.target.value)}
+                          className="flex h-10 w-full items-center justify-between rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm ring-offset-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-zinc-950 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:ring-offset-zinc-950 dark:placeholder:text-zinc-400 dark:focus:ring-zinc-300"
+                        >
+                          <option value="">Selecione uma categoria...</option>
+                          {categories.map((c: any) => (
+                            <option key={c.id} value={c.name}>{c.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="flex gap-2 justify-end">
+                        <Button type="submit" className="px-2 py-1 h-auto text-xs">Salvar</Button>
+                        <Button type="button" variant="outline" className="px-2 py-1 h-auto text-xs" onClick={() => { setEditingDetail(null); setEditingDetailCategory(''); }}>Cancelar</Button>
+                      </div>
+                    </form>
+                  ) : (
+                    <>
+                      <div className="flex flex-col">
+                        <span className="font-medium dark:text-zinc-200">{g.name}</span>
+                        <span className="text-xs text-zinc-500 dark:text-zinc-400">Categoria: {g.category_name || 'Nenhuma'}</span>
+                      </div>
+                      <div className="flex gap-1">
+                        <button onClick={() => { setEditingDetail(g); setEditingDetailCategory(g.category_name || ''); }} className="p-1 text-emerald-500 hover:text-emerald-700">
+                          <Edit2 className="h-4 w-4" />
+                        </button>
+                        <button onClick={() => setConfirmModal({
+                          isOpen: true,
+                          title: 'Excluir Grupo',
+                          message: `Deseja excluir o grupo "${g.name}"?`,
+                          onConfirm: () => sendWS('DETAIL_DELETE', { id: g.id })
+                        })} className="p-1 text-rose-500 hover:text-rose-700">
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </li>
+            )})}
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ERPTab({ menu, categories, details, sendWS, onAddMenu, onEditMenu, onResetHistory, currentUser }: any) {
+  const [activeSection, setActiveSection] = useState<string | null>(null);
+  const [confirmModal, setConfirmModal] = useState({ isOpen: false, title: '', message: '', onConfirm: () => {} });
+
+  const renderMenu = () => (
+    <div className="max-w-2xl mx-auto space-y-2">
+      <h2 className="text-2xl font-bold mb-6 dark:text-zinc-100">ERP - Gestão</h2>
+      
+      <button 
+        onClick={() => setActiveSection('products')}
+        className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
+      >
+        <div className="flex items-center gap-4">
+          <div className="p-2 rounded-xl bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
+            <UtensilsCrossed className="h-6 w-6" />
+          </div>
+          <div className="text-left">
+            <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Produtos</h3>
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">Gerenciar itens do cardápio</p>
+          </div>
+        </div>
+        <ChevronRight className="h-5 w-5 text-zinc-400" />
+      </button>
+
+      <button 
+        onClick={() => setActiveSection('categories')}
+        className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
+      >
+        <div className="flex items-center gap-4">
+          <div className="p-2 rounded-xl bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400">
+            <Tags className="h-6 w-6" />
+          </div>
+          <div className="text-left">
+            <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Categorias e Grupos</h3>
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">Organizar cardápio e opções</p>
+          </div>
+        </div>
+        <ChevronRight className="h-5 w-5 text-zinc-400" />
+      </button>
+
+      <button 
+        onClick={() => setActiveSection('danger')}
+        className="w-full flex items-center justify-between p-4 rounded-2xl bg-rose-50 border border-rose-200 hover:bg-rose-100 transition-colors dark:bg-rose-900/10 dark:border-rose-900/30 dark:hover:bg-rose-900/20"
+      >
+        <div className="flex items-center gap-4">
+          <div className="p-2 rounded-xl bg-rose-100 text-rose-600 dark:bg-rose-900/50 dark:text-rose-400">
+            <AlertCircle className="h-6 w-6" />
+          </div>
+          <div className="text-left">
+            <h3 className="font-semibold text-rose-900 dark:text-rose-200">Ações de Limpeza</h3>
+            <p className="text-sm text-rose-700 dark:text-rose-400">Zerar histórico e dados</p>
+          </div>
+        </div>
+        <ChevronRight className="h-5 w-5 text-rose-400" />
+      </button>
+    </div>
+  );
+
+  const renderSectionContent = () => {
+    switch (activeSection) {
+      case 'products':
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+              <MenuTab 
+                menu={menu} 
+                categories={categories}
+                details={details}
+                canEdit={true} 
+                onAdd={onAddMenu} 
+                onEdit={onEditMenu} 
+                onWS={sendWS} 
+              />
+            </div>
+          </div>
+        );
+      case 'categories':
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+              <CategoryDetailManager categories={categories} details={details} sendWS={sendWS} menu={menu} />
+            </div>
+          </div>
+        );
+      case 'danger':
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <section className="rounded-2xl border border-rose-100 bg-rose-50/30 p-6 shadow-sm dark:bg-rose-900/10 dark:border-rose-900/20">
+              <div className="flex items-center gap-2 mb-4">
+                <AlertCircle className="h-5 w-5 text-rose-600" />
+                <h3 className="text-lg font-semibold text-rose-900 dark:text-rose-200">Ações de Limpeza</h3>
+              </div>
+              <p className="mb-6 text-sm text-rose-700 dark:text-rose-300">Estas ações são permanentes e não podem ser desfeitas. Use com cautela.</p>
+              <Button 
+                variant="danger" 
+                className="w-full py-6"
+                onClick={() => {
+                  setConfirmModal({
+                    isOpen: true,
+                    title: 'Limpar Histórico',
+                    message: 'Deseja realmente limpar todo o histórico de movimentações? Esta ação não pode ser desfeita.',
+                    onConfirm: async () => {
+                      try {
+                          const res = await fetch('/api/admin/reset-history', { 
+                              method: 'POST',
+                              headers: { 'x-user-id': currentUser.id }
+                          });
+                          const data = await res.json();
+                          if (data.success) {
+                              toast.success('Histórico limpo!');
+                              onResetHistory(); // Call parent callback if needed, but WS handles update
+                          } else {
+                              toast.error(data.message || 'Erro ao limpar histórico');
+                          }
+                      } catch (error) {
+                          toast.error('Erro de conexão');
+                      }
+                      setConfirmModal({ ...confirmModal, isOpen: false });
+                    }
+                  });
+                }}
+              >
+                <Trash2 className="mr-2 h-4 w-4" /> Limpar Histórico
+              </Button>
+            </section>
+          </div>
+        );
+      default:
+        return null;
+    }
+  };
+
+  const getSectionTitle = () => {
+    switch (activeSection) {
+      case 'products': return 'Produtos';
+      case 'categories': return 'Categorias e Grupos';
+      case 'danger': return 'Ações de Limpeza';
+      default: return '';
+    }
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto">
+      {activeSection === null ? (
+        renderMenu()
+      ) : (
+        <div className="space-y-6">
+          <div className="flex items-center gap-4">
+            <button 
+              onClick={() => setActiveSection(null)}
+              className="p-2 -ml-2 rounded-full hover:bg-zinc-100 transition-colors dark:hover:bg-zinc-800 text-zinc-500 dark:text-zinc-400"
+            >
+              <ChevronLeft className="h-6 w-6" />
+            </button>
+            <h2 className="text-2xl font-bold dark:text-zinc-100">{getSectionTitle()}</h2>
+          </div>
+          {renderSectionContent()}
+        </div>
+      )}
 
       <Modal 
         isOpen={confirmModal.isOpen} 
@@ -821,9 +1670,17 @@ function ConfigTab({ users, settings, darkMode, setDarkMode, notificationsEnable
       message: 'Tem certeza que deseja excluir este usuário?',
       onConfirm: async () => {
         try {
-          await deleteDoc(doc(db, 'users', id));
-          onRefreshUsers();
-          toast.success('Usuário removido');
+          const res = await fetch(`/api/users/${id}`, { 
+            method: 'DELETE',
+            headers: { 'x-user-id': currentUser.id }
+          });
+          const data = await res.json();
+          if (data.success) {
+            onRefreshUsers();
+            toast.success('Usuário removido');
+          } else {
+            toast.error(data.message || 'Erro ao remover usuário');
+          }
         } catch (error) {
           toast.error('Erro de conexão ao remover usuário');
         }
@@ -884,6 +1741,22 @@ function ConfigTab({ users, settings, darkMode, setDarkMode, notificationsEnable
             </div>
             <ChevronRight className="h-5 w-5 text-zinc-400" />
           </button>
+
+          <button 
+            onClick={() => setActiveSection('native')}
+            className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
+          >
+            <div className="flex items-center gap-4">
+              <div className="p-2 rounded-xl bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400">
+                <Download className="h-6 w-6" />
+              </div>
+              <div className="text-left">
+                <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">App Nativo</h3>
+                <p className="text-sm text-zinc-500 dark:text-zinc-400">Preparação para Android e iOS</p>
+              </div>
+            </div>
+            <ChevronRight className="h-5 w-5 text-zinc-400" />
+          </button>
         </>
       )}
     </div>
@@ -891,6 +1764,46 @@ function ConfigTab({ users, settings, darkMode, setDarkMode, notificationsEnable
 
   const renderSectionContent = () => {
     switch (activeSection) {
+      case 'native':
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+              <h3 className="text-lg font-bold mb-4 dark:text-zinc-100">Preparação para App Nativo</h3>
+              <div className="space-y-4 text-sm text-zinc-600 dark:text-zinc-400">
+                <p>O sistema já está configurado com <strong>Capacitor</strong> para ser transformado em aplicativo nativo.</p>
+                
+                <div className="p-4 rounded-xl bg-amber-50 border border-amber-100 dark:bg-amber-900/20 dark:border-amber-800">
+                  <h4 className="font-bold text-amber-900 dark:text-amber-300 mb-2 flex items-center gap-2">
+                    <AlertCircle className="h-4 w-4" />
+                    Passos Necessários no Firebase
+                  </h4>
+                  <ol className="list-decimal list-inside space-y-2">
+                    <li>Vá ao Console do Firebase e adicione um app <strong>Android</strong> e um <strong>iOS</strong>.</li>
+                    <li>Baixe o <code>google-services.json</code> (Android) e <code>GoogleService-Info.plist</code> (iOS).</li>
+                    <li>Coloque os arquivos nas pastas correspondentes do projeto nativo gerado.</li>
+                  </ol>
+                </div>
+
+                <div className="p-4 rounded-xl bg-blue-50 border border-blue-100 dark:bg-blue-900/20 dark:border-blue-800">
+                  <h4 className="font-bold text-blue-900 dark:text-blue-300 mb-2 flex items-center gap-2">
+                    <Settings className="h-4 w-4" />
+                    Comandos Disponíveis
+                  </h4>
+                  <p className="mb-2">Você pode usar os seguintes scripts no <code>package.json</code>:</p>
+                  <ul className="list-disc list-inside space-y-1 font-mono text-xs">
+                    <li><code>npm run cap:sync</code> - Sincroniza o código web com o nativo.</li>
+                    <li><code>npm run cap:add-android</code> - Adiciona a plataforma Android.</li>
+                    <li><code>npm run cap:add-ios</code> - Adiciona a plataforma iOS.</li>
+                    <li><code>npm run cap:open-android</code> - Abre o projeto no Android Studio.</li>
+                    <li><code>npm run cap:open-ios</code> - Abre o projeto no Xcode.</li>
+                  </ul>
+                </div>
+
+                <p className="italic">Nota: Para gerar o aplicativo final, você precisará do Android Studio (Android) e Xcode (iOS/Mac) instalados em sua máquina local.</p>
+              </div>
+            </div>
+          </div>
+        );
       case 'account':
         return (
           <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
@@ -902,12 +1815,19 @@ function ConfigTab({ users, settings, darkMode, setDarkMode, notificationsEnable
                 const password = formData.get('password') as string;
                 
                 try {
-                  const updateData: any = { username, role: currentUser.role };
-                  if (password) updateData.password = password;
-                  await updateDoc(doc(db, 'users', currentUser.id), updateData);
-                  toast.success('Dados atualizados com sucesso!');
-                  onRefreshUsers();
-                  onUpdateCurrentUser({ ...currentUser, username });
+                  const res = await fetch(`/api/users/${currentUser.id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', 'x-user-id': currentUser.id },
+                    body: JSON.stringify({ username, password: password || undefined, role: currentUser.role })
+                  });
+                  const data = await res.json();
+                  if (data.success) {
+                    toast.success('Dados atualizados com sucesso!');
+                    onRefreshUsers();
+                    onUpdateCurrentUser({ ...currentUser, username });
+                  } else {
+                    toast.error(data.message || 'Erro ao atualizar dados');
+                  }
                 } catch (error) {
                   toast.error('Erro de conexão');
                 }
@@ -1222,20 +2142,21 @@ function AddUserModal({ isOpen, onClose, onSuccess, currentUser }: any) {
       <form onSubmit={async (e) => {
         e.preventDefault();
         const formData = new FormData(e.currentTarget);
-        try {
-          const newId = crypto.randomUUID();
-          const data = Object.fromEntries(formData);
-          await setDoc(doc(db, 'users', newId), {
-            id: newId,
-            username: data.username,
-            password: data.password,
-            role: data.role
-          });
+        const res = await fetch('/api/users', {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'x-user-id': currentUser?.id
+          },
+          body: JSON.stringify(Object.fromEntries(formData))
+        });
+        if (res.ok) {
           toast.success('Usuário criado!');
           onSuccess();
           onClose();
-        } catch (error) {
-          toast.error('Erro de conexão');
+        } else {
+          const data = await res.json();
+          toast.error(data.message || 'Erro ao criar usuário');
         }
       }} className="space-y-4">
         <div className="space-y-2">
@@ -1272,13 +2193,21 @@ function EditUserModal({ isOpen, onClose, user, onSuccess, currentUser }: any) {
         const data = Object.fromEntries(formData);
         if (!data.password) delete data.password;
 
-        try {
-          await updateDoc(doc(db, 'users', user.id), data);
+        const res = await fetch(`/api/users/${user.id}`, {
+          method: 'PUT',
+          headers: { 
+            'Content-Type': 'application/json',
+            'x-user-id': currentUser?.id
+          },
+          body: JSON.stringify(data)
+        });
+        if (res.ok) {
           toast.success('Usuário atualizado!');
           onSuccess();
           onClose();
-        } catch (error) {
-          toast.error('Erro de conexão');
+        } else {
+          const resData = await res.json();
+          toast.error(resData.message || 'Erro ao atualizar usuário');
         }
       }} className="space-y-4">
         <div className="space-y-2">
@@ -1750,173 +2679,6 @@ function OrderModal({ isOpen, onClose, menu, categories = [], details = [], onSe
           </Button>
         </div>
       </div>
-    </Modal>
-  );
-}
-
-function SidebarItem({ icon, label, active, onClick }: any) {
-  return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "flex w-full items-center space-x-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-        active 
-          ? "bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-50" 
-          : "text-zinc-500 hover:bg-zinc-50 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800/50 dark:hover:text-zinc-50"
-      )}
-    >
-      {icon}
-      <span>{label}</span>
-    </button>
-  );
-}
-
-function ConfirmModal({ isOpen, onClose, title, message, onConfirm }: any) {
-  return (
-    <Modal isOpen={isOpen} onClose={onClose} title={title}>
-      <div className="space-y-6">
-        <p className="text-zinc-600 dark:text-zinc-400">{message}</p>
-        <div className="flex justify-end gap-3">
-          <Button variant="outline" onClick={onClose}>
-            Cancelar
-          </Button>
-          <Button variant="danger" onClick={onConfirm}>
-            Confirmar
-          </Button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-function MenuTab({ menu, categories, details, canEdit, onAdd, onEdit, onWS }: any) {
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold tracking-tight">Cardápio</h2>
-        {canEdit && (
-          <Button onClick={onAdd} className="gap-2">
-            <Plus className="h-4 w-4" /> Novo Item
-          </Button>
-        )}
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {menu.map((item: any) => (
-          <div key={item.id} className="p-4 rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-            <div className="flex justify-between items-start">
-              <div>
-                <h3 className="font-semibold text-lg">{item.name}</h3>
-                <p className="text-sm text-zinc-500">{item.category} - {item.type}</p>
-                <p className="mt-2 font-medium text-emerald-600">R$ {Number(item.price).toFixed(2)}</p>
-              </div>
-              {canEdit && (
-                <div className="flex gap-2">
-                  <button onClick={() => onEdit(item)} className="p-2 text-zinc-400 hover:text-blue-500"><Edit2 className="h-4 w-4" /></button>
-                  <button onClick={() => onWS('MENU_DELETE', { id: item.id })} className="p-2 text-zinc-400 hover:text-red-500"><Trash2 className="h-4 w-4" /></button>
-                </div>
-              )}
-            </div>
-          </div>
-        ))}
-        {menu.length === 0 && <p className="text-zinc-500">Nenhum item no cardápio.</p>}
-      </div>
-    </div>
-  );
-}
-
-function ERPTab({ menu, categories, details, sendWS, onAddMenu, onEditMenu, onResetHistory }: any) {
-  return (
-    <div className="space-y-6">
-      <h2 className="text-2xl font-bold tracking-tight">ERP</h2>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="p-6 rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-          <h3 className="text-lg font-semibold mb-4">Gerenciar Cardápio</h3>
-          <MenuTab menu={menu} categories={categories} details={details} canEdit={true} onAdd={onAddMenu} onEdit={onEditMenu} onWS={sendWS} />
-        </div>
-        <div className="p-6 rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-          <h3 className="text-lg font-semibold mb-4">Categorias e Detalhes</h3>
-          <p className="text-zinc-500">Gerenciamento de categorias e detalhes.</p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function TableModal({ isOpen, onClose, table, menu, categories, details, sendWS, userId, username }: any) {
-  const [isOrderModalOpen, setIsOrderModalOpen] = useState(false);
-  const [orders, setOrders] = useState<any[]>([]);
-
-  useEffect(() => {
-    if (isOpen && table) {
-      const unsub = onSnapshot(query(collection(db, 'orders'), where('table_id', '==', table.id)), (snapshot) => {
-        setOrders(snapshot.docs.map(d => d.data()));
-      });
-      return () => unsub();
-    }
-  }, [isOpen, table]);
-
-  if (!isOpen || !table) return null;
-
-  const total = orders.reduce((sum, order) => sum + (order.item_price * order.quantity), 0);
-
-  return (
-    <Modal isOpen={isOpen} onClose={onClose} title={`Mesa ${table.number}`}>
-      <div className="space-y-6">
-        <div className="flex justify-between items-center">
-          <div>
-            <p className="text-sm text-zinc-500">Status: {table.status}</p>
-            {table.customer_name && <p className="text-sm font-medium">Cliente: {table.customer_name}</p>}
-          </div>
-          <div className="flex gap-2">
-            <Button onClick={() => setIsOrderModalOpen(true)}>Novo Pedido</Button>
-            {table.status === 'open' && (
-              <Button variant="outline" onClick={() => sendWS('TABLE_REQUEST_BILL', { tableId: table.id, userId, username })}>Pedir Conta</Button>
-            )}
-            {table.status === 'bill_requested' && (
-              <Button variant="danger" onClick={() => sendWS('TABLE_CLOSE', { tableId: table.id, paymentMethods: ['Dinheiro'], userId, username })}>Fechar Mesa</Button>
-            )}
-          </div>
-        </div>
-        
-        <div>
-          <h3 className="font-semibold mb-3">Pedidos</h3>
-          <div className="space-y-2">
-            {orders.map(order => (
-              <div key={order.id} className="flex justify-between items-center p-3 rounded-lg border border-zinc-200 dark:border-zinc-800">
-                <div>
-                  <p className="font-medium">{order.quantity}x {order.item_name}</p>
-                  {order.observation && <p className="text-xs text-zinc-500">Obs: {order.observation}</p>}
-                </div>
-                <div className="flex items-center gap-3">
-                  <p className="font-medium">R$ {(order.item_price * order.quantity).toFixed(2)}</p>
-                  <button onClick={() => sendWS('ORDER_DELETE', { orderId: order.id, tableId: table.id, userId, username })} className="text-red-500 hover:text-red-700">
-                    <Trash2 className="h-4 w-4" />
-                  </button>
-                </div>
-              </div>
-            ))}
-            {orders.length === 0 && <p className="text-zinc-500 text-sm">Nenhum pedido para esta mesa.</p>}
-          </div>
-          {orders.length > 0 && (
-            <div className="mt-4 flex justify-between items-center pt-4 border-t border-zinc-200 dark:border-zinc-800">
-              <span className="font-bold">Total:</span>
-              <span className="font-bold text-lg text-emerald-600">R$ {total.toFixed(2)}</span>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <OrderModal 
-        isOpen={isOrderModalOpen} 
-        onClose={() => setIsOrderModalOpen(false)} 
-        menu={menu} 
-        categories={categories} 
-        details={details} 
-        onSend={(items: any[]) => {
-          sendWS('ORDER_SEND', { tableId: table.id, items, userId, username });
-          setIsOrderModalOpen(false);
-        }} 
-      />
     </Modal>
   );
 }
