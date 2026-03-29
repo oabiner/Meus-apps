@@ -37,9 +37,10 @@ import { Toaster, toast } from 'react-hot-toast';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { format } from 'date-fns';
-import { db } from './firebase';
+import { db, auth, googleProvider } from './firebase';
 import { handleSendWS, logHistory } from './firebase-logic';
 import { collection, onSnapshot, doc, setDoc, updateDoc, deleteDoc, getDocs, query, where, writeBatch, orderBy, limit } from 'firebase/firestore';
+import { signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
 import { 
   User, 
   Table, 
@@ -239,7 +240,7 @@ export default function App() {
   const [isOrderModalOpen, setIsOrderModalOpen] = useState(false);
   const [isCloseTableModalOpen, setIsCloseTableModalOpen] = useState(false);
   const [isConfirmBillModalOpen, setIsConfirmBillModalOpen] = useState(false);
-  const [deleteOrderModal, setDeleteOrderModal] = useState<{
+  const [confirmModal, setConfirmModal] = useState<{
     isOpen: boolean;
     title: string;
     message: string;
@@ -311,7 +312,10 @@ export default function App() {
     }
   }, [isLoggedIn]);
 
-  const handleLogin = async (e: React.FormEvent<HTMLFormElement>) => {
+  const [loginTab, setLoginTab] = useState<'staff' | 'host'>('staff');
+  const [hostAction, setHostAction] = useState<'login' | 'register'>('login');
+
+  const handleStaffLogin = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
     const username = formData.get('username') as string;
@@ -320,6 +324,24 @@ export default function App() {
 
     try {
       const usersSnap = await getDocs(collection(db, 'users'));
+      
+      // Auto-create initial host user if database is completely empty
+      if (usersSnap.empty && username === 'deckserrinha' && password === 'deckappadmin') {
+        const newId = crypto.randomUUID();
+        const newUser = {
+          id: newId,
+          username: 'deckserrinha',
+          password: 'deckappadmin',
+          role: 'host',
+          email: 'deckbarserrinha@gmail.com'
+        };
+        await setDoc(doc(db, 'users', newId), newUser);
+        setUser(newUser as User);
+        setIsLoggedIn(true);
+        toast.success('Bem-vindo! Usuário inicial criado.');
+        return;
+      }
+
       const userDoc = usersSnap.docs.find(d => d.data().username === username && d.data().password === password);
       
       if (userDoc) {
@@ -327,19 +349,87 @@ export default function App() {
         if (userData.role !== 'host') {
           const settingsSnap = await getDocs(collection(db, 'settings'));
           const tokenDoc = settingsSnap.docs.find(d => d.id === 'access_token');
-          if (token !== tokenDoc?.data().value) {
+          const serverToken = tokenDoc ? tokenDoc.data().value : '123456'; // Default token if not set
+          
+          if (token !== serverToken) {
             toast.error('Token de acesso inválido');
             return;
           }
         }
         setUser(userData);
         setIsLoggedIn(true);
-        toast.success('Bem-vindo ao Deck Serrinha!');
+        toast.success('Bem-vindo!');
       } else {
         toast.error('Usuário ou senha incorretos');
       }
+    } catch (err: any) {
+      console.error("Login error:", err);
+      toast.error('Erro: ' + (err.message || 'Falha ao conectar ao servidor'));
+    }
+  };
+
+  const processHostLogin = async (email: string | null) => {
+    if (!email) return;
+    try {
+      const usersSnap = await getDocs(collection(db, 'users'));
+      let userDoc = usersSnap.docs.find(d => d.data().email === email);
+
+      if (!userDoc && email === 'deckbarserrinha@gmail.com') {
+        const deckUser = usersSnap.docs.find(d => d.data().username === 'deckserrinha');
+        if (deckUser) {
+          await updateDoc(doc(db, 'users', deckUser.id), { email });
+          userDoc = deckUser;
+        }
+      }
+
+      if (userDoc) {
+        setUser({ ...userDoc.data(), id: userDoc.id } as User);
+        setIsLoggedIn(true);
+        toast.success('Bem-vindo!');
+      } else {
+        const newId = crypto.randomUUID();
+        const newUser = {
+          id: newId,
+          username: email.split('@')[0] || 'host',
+          role: 'host',
+          email: email,
+          restaurantId: newId
+        };
+        await setDoc(doc(db, 'users', newId), newUser);
+        setUser(newUser as User);
+        setIsLoggedIn(true);
+        toast.success('Novo restaurante criado com sucesso!');
+      }
     } catch (err) {
-      toast.error('Erro ao conectar ao servidor');
+      toast.error('Erro ao processar login do host');
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      await processHostLogin(result.user.email);
+    } catch (error: any) {
+      toast.error('Erro ao fazer login com Google: ' + error.message);
+    }
+  };
+
+  const handleEmailAuth = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
+    const email = formData.get('email') as string;
+    const password = formData.get('password') as string;
+
+    try {
+      if (hostAction === 'register') {
+        const result = await createUserWithEmailAndPassword(auth, email, password);
+        await processHostLogin(result.user.email);
+      } else {
+        const result = await signInWithEmailAndPassword(auth, email, password);
+        await processHostLogin(result.user.email);
+      }
+    } catch (error: any) {
+      toast.error('Erro de autenticação: ' + error.message);
     }
   };
 
@@ -364,23 +454,85 @@ export default function App() {
             <h1 className="text-3xl font-bold text-zinc-900 dark:text-zinc-100">Deck Serrinha</h1>
             <p className="text-zinc-500 dark:text-zinc-400">Sistema de Gestão de Restaurante</p>
           </div>
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Login</label>
-              <Input name="username" placeholder="Seu usuário" required />
+
+          <div className="flex gap-2 mb-6 p-1 bg-zinc-100 dark:bg-zinc-800 rounded-lg">
+            <button 
+              onClick={() => setLoginTab('staff')}
+              className={cn("flex-1 py-2 text-sm font-medium rounded-md transition-colors", loginTab === 'staff' ? "bg-white dark:bg-zinc-700 shadow-sm text-zinc-900 dark:text-zinc-100" : "text-zinc-500 dark:text-zinc-400")}
+            >
+              Equipe
+            </button>
+            <button 
+              onClick={() => setLoginTab('host')}
+              className={cn("flex-1 py-2 text-sm font-medium rounded-md transition-colors", loginTab === 'host' ? "bg-white dark:bg-zinc-700 shadow-sm text-zinc-900 dark:text-zinc-100" : "text-zinc-500 dark:text-zinc-400")}
+            >
+              Restaurante (Host)
+            </button>
+          </div>
+
+          {loginTab === 'staff' ? (
+            <form onSubmit={handleStaffLogin} className="space-y-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Login</label>
+                <Input name="username" placeholder="Seu usuário" required />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Senha</label>
+                <Input name="password" type="password" placeholder="Sua senha" required />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Token de Acesso</label>
+                <Input name="token" type="password" placeholder="Token do sistema (opcional para host)" />
+              </div>
+              <Button type="submit" className="w-full py-6 text-lg">
+                Entrar
+              </Button>
+            </form>
+          ) : (
+            <div className="space-y-4">
+              <Button type="button" variant="outline" onClick={handleGoogleLogin} className="w-full py-6 text-lg flex items-center justify-center gap-2">
+                <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
+                  <path d="M12.0003 4.75C13.7703 4.75 15.3553 5.36002 16.6053 6.54998L20.0303 3.125C17.9502 1.19 15.2353 0 12.0003 0C7.31028 0 3.25527 2.69 1.28027 6.60998L5.27028 9.70498C6.21525 6.86002 8.87028 4.75 12.0003 4.75Z" fill="#EA4335" />
+                  <path d="M23.49 12.275C23.49 11.49 23.415 10.73 23.3 10H12V14.51H18.47C18.18 15.99 17.34 17.25 16.08 18.1L19.945 21.1C22.2 19.01 23.49 15.92 23.49 12.275Z" fill="#4285F4" />
+                  <path d="M5.26498 14.2949C5.02498 13.5699 4.88501 12.7999 4.88501 11.9999C4.88501 11.1999 5.01998 10.4299 5.26498 9.7049L1.275 6.60986C0.46 8.22986 0 10.0599 0 11.9999C0 13.9399 0.46 15.7699 1.28 17.3899L5.26498 14.2949Z" fill="#FBBC05" />
+                  <path d="M12.0004 24.0001C15.2404 24.0001 17.9654 22.935 19.9454 21.095L16.0804 18.095C15.0054 18.82 13.6204 19.245 12.0004 19.245C8.8704 19.245 6.21537 17.135 5.26538 14.29L1.27539 17.385C3.25539 21.31 7.3104 24.0001 12.0004 24.0001Z" fill="#34A853" />
+                </svg>
+                Continuar com Google
+              </Button>
+              
+              <div className="relative">
+                <div className="absolute inset-0 flex items-center">
+                  <span className="w-full border-t border-zinc-200 dark:border-zinc-700" />
+                </div>
+                <div className="relative flex justify-center text-xs uppercase">
+                  <span className="bg-white dark:bg-zinc-900 px-2 text-zinc-500">Ou use seu email</span>
+                </div>
+              </div>
+
+              <form onSubmit={handleEmailAuth} className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Email</label>
+                  <Input name="email" type="email" placeholder="seu@email.com" required />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Senha</label>
+                  <Input name="password" type="password" placeholder="Sua senha" required />
+                </div>
+                <Button type="submit" className="w-full py-6 text-lg">
+                  {hostAction === 'login' ? 'Entrar' : 'Criar Restaurante'}
+                </Button>
+                <div className="text-center">
+                  <button 
+                    type="button" 
+                    onClick={() => setHostAction(a => a === 'login' ? 'register' : 'login')}
+                    className="text-sm text-emerald-600 hover:underline"
+                  >
+                    {hostAction === 'login' ? 'Não tem conta? Crie seu restaurante' : 'Já tem conta? Faça login'}
+                  </button>
+                </div>
+              </form>
             </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Senha</label>
-              <Input name="password" type="password" placeholder="Sua senha" required />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Token de Acesso (Se não for Host)</label>
-              <Input name="token" type="password" placeholder="Token do sistema" />
-            </div>
-            <Button type="submit" className="w-full py-6 text-lg">
-              Entrar
-            </Button>
-          </form>
+          )}
         </motion.div>
       </div>
     );
@@ -1598,6 +1750,173 @@ function OrderModal({ isOpen, onClose, menu, categories = [], details = [], onSe
           </Button>
         </div>
       </div>
+    </Modal>
+  );
+}
+
+function SidebarItem({ icon, label, active, onClick }: any) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "flex w-full items-center space-x-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+        active 
+          ? "bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-50" 
+          : "text-zinc-500 hover:bg-zinc-50 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800/50 dark:hover:text-zinc-50"
+      )}
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function ConfirmModal({ isOpen, onClose, title, message, onConfirm }: any) {
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title={title}>
+      <div className="space-y-6">
+        <p className="text-zinc-600 dark:text-zinc-400">{message}</p>
+        <div className="flex justify-end gap-3">
+          <Button variant="outline" onClick={onClose}>
+            Cancelar
+          </Button>
+          <Button variant="danger" onClick={onConfirm}>
+            Confirmar
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function MenuTab({ menu, categories, details, canEdit, onAdd, onEdit, onWS }: any) {
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-bold tracking-tight">Cardápio</h2>
+        {canEdit && (
+          <Button onClick={onAdd} className="gap-2">
+            <Plus className="h-4 w-4" /> Novo Item
+          </Button>
+        )}
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {menu.map((item: any) => (
+          <div key={item.id} className="p-4 rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <div className="flex justify-between items-start">
+              <div>
+                <h3 className="font-semibold text-lg">{item.name}</h3>
+                <p className="text-sm text-zinc-500">{item.category} - {item.type}</p>
+                <p className="mt-2 font-medium text-emerald-600">R$ {Number(item.price).toFixed(2)}</p>
+              </div>
+              {canEdit && (
+                <div className="flex gap-2">
+                  <button onClick={() => onEdit(item)} className="p-2 text-zinc-400 hover:text-blue-500"><Edit2 className="h-4 w-4" /></button>
+                  <button onClick={() => onWS('MENU_DELETE', { id: item.id })} className="p-2 text-zinc-400 hover:text-red-500"><Trash2 className="h-4 w-4" /></button>
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+        {menu.length === 0 && <p className="text-zinc-500">Nenhum item no cardápio.</p>}
+      </div>
+    </div>
+  );
+}
+
+function ERPTab({ menu, categories, details, sendWS, onAddMenu, onEditMenu, onResetHistory }: any) {
+  return (
+    <div className="space-y-6">
+      <h2 className="text-2xl font-bold tracking-tight">ERP</h2>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="p-6 rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <h3 className="text-lg font-semibold mb-4">Gerenciar Cardápio</h3>
+          <MenuTab menu={menu} categories={categories} details={details} canEdit={true} onAdd={onAddMenu} onEdit={onEditMenu} onWS={sendWS} />
+        </div>
+        <div className="p-6 rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <h3 className="text-lg font-semibold mb-4">Categorias e Detalhes</h3>
+          <p className="text-zinc-500">Gerenciamento de categorias e detalhes.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TableModal({ isOpen, onClose, table, menu, categories, details, sendWS, userId, username }: any) {
+  const [isOrderModalOpen, setIsOrderModalOpen] = useState(false);
+  const [orders, setOrders] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (isOpen && table) {
+      const unsub = onSnapshot(query(collection(db, 'orders'), where('table_id', '==', table.id)), (snapshot) => {
+        setOrders(snapshot.docs.map(d => d.data()));
+      });
+      return () => unsub();
+    }
+  }, [isOpen, table]);
+
+  if (!isOpen || !table) return null;
+
+  const total = orders.reduce((sum, order) => sum + (order.item_price * order.quantity), 0);
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title={`Mesa ${table.number}`}>
+      <div className="space-y-6">
+        <div className="flex justify-between items-center">
+          <div>
+            <p className="text-sm text-zinc-500">Status: {table.status}</p>
+            {table.customer_name && <p className="text-sm font-medium">Cliente: {table.customer_name}</p>}
+          </div>
+          <div className="flex gap-2">
+            <Button onClick={() => setIsOrderModalOpen(true)}>Novo Pedido</Button>
+            {table.status === 'open' && (
+              <Button variant="outline" onClick={() => sendWS('TABLE_REQUEST_BILL', { tableId: table.id, userId, username })}>Pedir Conta</Button>
+            )}
+            {table.status === 'bill_requested' && (
+              <Button variant="danger" onClick={() => sendWS('TABLE_CLOSE', { tableId: table.id, paymentMethods: ['Dinheiro'], userId, username })}>Fechar Mesa</Button>
+            )}
+          </div>
+        </div>
+        
+        <div>
+          <h3 className="font-semibold mb-3">Pedidos</h3>
+          <div className="space-y-2">
+            {orders.map(order => (
+              <div key={order.id} className="flex justify-between items-center p-3 rounded-lg border border-zinc-200 dark:border-zinc-800">
+                <div>
+                  <p className="font-medium">{order.quantity}x {order.item_name}</p>
+                  {order.observation && <p className="text-xs text-zinc-500">Obs: {order.observation}</p>}
+                </div>
+                <div className="flex items-center gap-3">
+                  <p className="font-medium">R$ {(order.item_price * order.quantity).toFixed(2)}</p>
+                  <button onClick={() => sendWS('ORDER_DELETE', { orderId: order.id, tableId: table.id, userId, username })} className="text-red-500 hover:text-red-700">
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            ))}
+            {orders.length === 0 && <p className="text-zinc-500 text-sm">Nenhum pedido para esta mesa.</p>}
+          </div>
+          {orders.length > 0 && (
+            <div className="mt-4 flex justify-between items-center pt-4 border-t border-zinc-200 dark:border-zinc-800">
+              <span className="font-bold">Total:</span>
+              <span className="font-bold text-lg text-emerald-600">R$ {total.toFixed(2)}</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <OrderModal 
+        isOpen={isOrderModalOpen} 
+        onClose={() => setIsOrderModalOpen(false)} 
+        menu={menu} 
+        categories={categories} 
+        details={details} 
+        onSend={(items: any[]) => {
+          sendWS('ORDER_SEND', { tableId: table.id, items, userId, username });
+          setIsOrderModalOpen(false);
+        }} 
+      />
     </Modal>
   );
 }

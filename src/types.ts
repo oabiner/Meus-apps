@@ -1,5 +1,3 @@
-import { WebSocket } from 'ws';
-
 export type UserRole = 'host' | 'admin' | 'waiter' | 'kitchen';
 
 export interface User {
