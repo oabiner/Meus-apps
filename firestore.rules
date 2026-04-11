@@ -14,16 +14,16 @@ service cloud.firestore {
     function isAdmin() {
       return isAuthenticated() && (
         ('email' in request.auth.token && request.auth.token.email == "abinerfelipe@gmail.com") ||
-        ('email' in request.auth.token && request.auth.token.email == "server@deckserrinha.com") ||
+        ('email' in request.auth.token && request.auth.token.email == "server-v2@deckserrinha.com") ||
         request.auth.uid == "FjELn31a0VUyVout6GTzotCIsaT2" ||
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'host'])
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'host', 'caixa'])
       );
     }
 
     function isServer() {
       return isAuthenticated() && (
-        ('email' in request.auth.token && request.auth.token.email == "server@deckserrinha.com") ||
+        ('email' in request.auth.token && request.auth.token.email == "server-v2@deckserrinha.com") ||
         request.auth.uid == "FjELn31a0VUyVout6GTzotCIsaT2"
       );
     }
@@ -33,7 +33,7 @@ service cloud.firestore {
         isServer() ||
         ('email' in request.auth.token && request.auth.token.email == "abinerfelipe@gmail.com") ||
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'host', 'waiter', 'kitchen'])
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'host', 'waiter', 'kitchen', 'caixa'])
       );
     }
 
@@ -42,7 +42,7 @@ service cloud.firestore {
         isServer() ||
         ('email' in request.auth.token && request.auth.token.email == "abinerfelipe@gmail.com") ||
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'host', 'waiter'])
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'host', 'waiter', 'caixa'])
       );
     }
 
@@ -61,7 +61,7 @@ service cloud.firestore {
     function isValidUser(data) {
       return data.keys().hasAll(['email', 'role', 'username']) &&
              data.email is string && data.email.size() > 0 && data.email.size() < 100 &&
-             data.role in ['host', 'admin', 'waiter', 'kitchen'] &&
+             data.role in ['host', 'admin', 'waiter', 'kitchen', 'caixa'] &&
              data.username is string && data.username.size() > 0 && data.username.size() < 50;
     }
 

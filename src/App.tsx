@@ -26,11 +26,24 @@ import {
   Search,
   Minus,
   MessageSquare,
+  MessageSquareText,
+  StickyNote,
   Bell,
   Volume2,
   ChefHat,
   UserCircle,
-  Database
+  Database,
+  History,
+  ShieldCheck,
+  Sparkles,
+  Hash,
+  Home,
+  Trees,
+  MoveRight,
+  ArrowLeft,
+  ArrowUp,
+  ArrowDown,
+  Printer
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Toaster, toast } from 'react-hot-toast';
@@ -50,6 +63,12 @@ import { doc, getDocFromServer } from 'firebase/firestore';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
+}
+
+function formatTableNumber(num: number | string) {
+  const n = typeof num === 'string' ? parseInt(num) : num;
+  if (isNaN(n)) return num;
+  return n < 10 ? `0${n}` : `${n}`;
 }
 
 // --- Components ---
@@ -90,7 +109,7 @@ const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLI
   )
 );
 
-const Modal = ({ isOpen, onClose, title, children, zIndex = 50 }: { isOpen: boolean; onClose: () => void; title: string; children: React.ReactNode; zIndex?: number }) => (
+const Modal = ({ isOpen, onClose, title, children, zIndex = 50, maxWidth = 'max-w-lg' }: { isOpen: boolean; onClose: () => void; title: string; children: React.ReactNode; zIndex?: number; maxWidth?: string }) => (
   <AnimatePresence>
     {isOpen && (
       <div className={`fixed inset-0 flex items-center justify-center p-4`} style={{ zIndex }}>
@@ -105,7 +124,7 @@ const Modal = ({ isOpen, onClose, title, children, zIndex = 50 }: { isOpen: bool
           initial={{ opacity: 0, scale: 0.95, y: 20 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: 20 }}
-          className="relative w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl dark:bg-zinc-900 dark:border dark:border-zinc-800"
+          className={cn("relative w-full rounded-2xl bg-white p-6 shadow-2xl dark:bg-zinc-900 dark:border dark:border-zinc-800", maxWidth)}
         >
           <div className="mb-4 flex items-center justify-between">
             <h3 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">{title}</h3>
@@ -123,8 +142,10 @@ const Modal = ({ isOpen, onClose, title, children, zIndex = 50 }: { isOpen: bool
 const TableCard = ({ table, onClick }: any) => {
   const statusColors = {
     free: 'bg-white border-zinc-200 hover:border-emerald-200 hover:bg-emerald-50/30 dark:bg-zinc-800 dark:border-zinc-700 dark:hover:border-emerald-700 dark:hover:bg-emerald-900/20',
-    open: 'bg-emerald-50 border-emerald-200 text-emerald-900 dark:bg-emerald-900/30 dark:border-emerald-800 dark:text-emerald-100',
-    bill_requested: 'bg-amber-50 border-amber-200 text-amber-900 animate-pulse dark:bg-amber-900/30 dark:border-amber-800 dark:text-amber-100',
+    open: table.type === 'gramado' 
+      ? 'bg-emerald-100 border-emerald-300 text-emerald-900 dark:bg-emerald-900/50 dark:border-emerald-700 dark:text-emerald-50'
+      : 'bg-blue-50 border-blue-200 text-blue-900 dark:bg-blue-900/30 dark:border-blue-800 dark:text-blue-100',
+    bill_requested: 'bg-amber-100 border-amber-200 text-amber-900 dark:bg-amber-900/40 dark:border-amber-800 dark:text-amber-200 shadow-sm font-bold',
   };
 
   return (
@@ -133,16 +154,38 @@ const TableCard = ({ table, onClick }: any) => {
       whileTap={{ scale: 0.98 }}
       onClick={onClick}
       className={cn(
-        'flex flex-col items-center justify-center rounded-xl border-2 p-4 transition-all shadow-sm',
-        statusColors[table.status]
+        'flex flex-col items-center justify-center rounded-xl border-2 p-4 transition-all shadow-sm relative overflow-hidden',
+        statusColors[table.status as keyof typeof statusColors]
       )}
     >
-      <span className="text-2xl font-bold dark:text-zinc-100">{table.number}</span>
-      <span className="mt-1 text-[10px] font-medium uppercase tracking-wider opacity-60 dark:text-zinc-400">
+          {table.status === 'open' && (
+        <div className={cn(
+          "absolute top-0 right-0 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-tighter rounded-bl-lg",
+          table.type === 'gramado' ? "bg-emerald-600 text-white" : "bg-blue-600 text-white"
+        )}>
+          {table.type === 'gramado' ? 'Gramado' : 'Salão'}
+        </div>
+      )}
+      {table.status === 'bill_requested' && (
+        <div className="absolute top-0 right-0 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-tighter rounded-bl-lg bg-amber-600 text-white">
+          Conta
+        </div>
+      )}
+      <span className={cn(
+        "text-2xl font-bold",
+        table.status === 'bill_requested' ? "text-amber-950 dark:text-amber-100" : "dark:text-zinc-100"
+      )}>{formatTableNumber(table.number)}</span>
+      <span className={cn(
+        "mt-1 text-[10px] font-medium uppercase tracking-wider opacity-60",
+        table.status === 'bill_requested' ? "text-amber-900/70 dark:text-amber-200/70" : "dark:text-zinc-400"
+      )}>
         {table.status === 'free' ? 'Livre' : table.status === 'open' ? 'Aberta' : 'Conta'}
       </span>
       {table.customer_name && (
-        <span className="mt-2 w-full truncate text-center text-sm font-bold text-zinc-900 dark:text-zinc-100">{table.customer_name}</span>
+        <span className={cn(
+          "mt-2 w-full truncate text-center text-sm font-bold",
+          table.status === 'bill_requested' ? "text-amber-950 dark:text-amber-100" : "text-zinc-900 dark:text-zinc-100"
+        )}>{table.customer_name}</span>
       )}
     </motion.button>
   );
@@ -162,9 +205,16 @@ export default function App() {
     }
     return null;
   });
+  const userRef = useRef(user);
+  useEffect(() => {
+    userRef.current = user;
+  }, [user]);
+
   const [isLoggedIn, setIsLoggedIn] = useState(() => {
     if (typeof window !== 'undefined') {
-      return localStorage.getItem('isLoggedIn') === 'true';
+      const loggedIn = localStorage.getItem('isLoggedIn') === 'true';
+      const userSaved = localStorage.getItem('user');
+      return loggedIn && !!userSaved;
     }
     return false;
   });
@@ -179,7 +229,8 @@ export default function App() {
     }
   }, [isLoggedIn, user]);
 
-  const [activeTab, setActiveTab] = useState<'mesas' | 'cardapio' | 'historico' | 'config'>('mesas');
+  const [transferRequests, setTransferRequests] = useState<any[]>([]);
+  const [activeTab, setActiveTab] = useState<'mesas' | 'cardapio' | 'historico' | 'config' | 'gestao'>('mesas');
   
   // State from server
   const [tables, setTables] = useState<Table[]>([]);
@@ -196,6 +247,85 @@ export default function App() {
     }
     return false;
   });
+  const [displayScale, setDisplayScale] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('displayScale') || '100';
+    }
+    return '100';
+  });
+  const [fontSize, setFontSize] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('fontSize') || '16';
+    }
+    return '16';
+  });
+  const [vibrationEnabled, setVibrationEnabled] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('vibrationEnabled') !== 'false';
+    }
+    return true;
+  });
+
+  const vibrate = (pattern: number | number[] = 50) => {
+    if (vibrationEnabled && typeof navigator !== 'undefined' && navigator.vibrate) {
+      try {
+        navigator.vibrate(pattern);
+      } catch (e) {
+        console.warn('Vibration failed:', e);
+      }
+    }
+  };
+
+  const sortedCategories = useMemo(() => {
+    return [...categories].sort((a: any, b: any) => {
+      const orderA = a.sort_order ?? 999;
+      const orderB = b.sort_order ?? 999;
+      return orderA - orderB;
+    });
+  }, [categories]);
+
+  const sortedGroups = useMemo(() => {
+    return [...details].sort((a: any, b: any) => {
+      const catA = categories.find(c => c.name === a.category_name);
+      const catB = categories.find(c => c.name === b.category_name);
+      
+      const catOrderA = catA?.sort_order ?? 999;
+      const catOrderB = catB?.sort_order ?? 999;
+      
+      if (catOrderA !== catOrderB) return catOrderA - catOrderB;
+      
+      const groupOrderA = a.sort_order ?? 999;
+      const groupOrderB = b.sort_order ?? 999;
+      return groupOrderA - groupOrderB;
+    });
+  }, [details, categories]);
+
+  const sortedMenu = useMemo(() => {
+    return [...menu];
+  }, [menu]);
+
+  const hasPermission = (permission: string) => {
+    if (user?.role === 'host') return true;
+    if (!user?.role) return false;
+    const perms = settings[`permissions_${user.role}`];
+    if (!perms) return false;
+    try {
+      const parsed = typeof perms === 'string' ? JSON.parse(perms) : perms;
+      return !!parsed[permission];
+    } catch (e) {
+      return false;
+    }
+  };
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      document.documentElement.style.fontSize = `${fontSize}px`;
+      document.body.style.zoom = (parseInt(displayScale) / 100).toString();
+      localStorage.setItem('displayScale', displayScale);
+      localStorage.setItem('fontSize', fontSize);
+      localStorage.setItem('vibrationEnabled', String(vibrationEnabled));
+    }
+  }, [displayScale, fontSize, vibrationEnabled]);
 
   const [notificationsEnabled, setNotificationsEnabled] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -228,6 +358,11 @@ export default function App() {
   
   // UI State
   const [selectedTable, setSelectedTable] = useState<Table | null>(null);
+  const selectedTableRef = useRef(selectedTable);
+  useEffect(() => {
+    selectedTableRef.current = selectedTable;
+  }, [selectedTable]);
+
   const [isTableModalOpen, setIsTableModalOpen] = useState(false);
   const [isAddUserModalOpen, setIsAddUserModalOpen] = useState(false);
   const [isEditUserModalOpen, setIsEditUserModalOpen] = useState(false);
@@ -287,6 +422,7 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   const socketRef = useRef<WebSocket | null>(null);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     if (darkMode) {
@@ -306,110 +442,176 @@ export default function App() {
   const fetchUsers = () => fetch('/api/users').then(res => res.json()).then(setUsers);
   const fetchOrders = () => fetch('/api/orders').then(res => res.json()).then(setAllOrders);
 
+  const connectWebSocket = () => {
+    if (socketRef.current?.readyState === WebSocket.OPEN || socketRef.current?.readyState === WebSocket.CONNECTING) return;
+
+    // Close existing if any (shouldn't happen with the check above but for safety)
+    if (socketRef.current) {
+      socketRef.current.close();
+    }
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${protocol}//${window.location.host}`);
+    socketRef.current = ws;
+
+    ws.onopen = () => {
+      console.log('WebSocket connected');
+      reconnectAttempts.current = 0;
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      // Request full sync on connect
+      ws.send(JSON.stringify({ type: 'FULL_SYNC' }));
+    };
+
+    ws.onmessage = (event) => {
+      const data: WSEvent = JSON.parse(event.data);
+      switch (data.type) {
+        case 'TABLES_SYNC':
+          setTables(data.payload.sort((a: any, b: any) => a.number - b.number));
+          break;
+        case 'ORDERS_SYNC':
+          setAllOrders(data.payload);
+          break;
+        case 'TABLE_UPDATE':
+          if (!data.payload) break;
+          setTables(prev => prev.map(t => t.id === data.payload.id ? data.payload : t));
+          if (selectedTableRef.current?.id === data.payload.id) {
+            setSelectedTable(data.payload);
+          }
+          break;
+        case 'TABLE_CLOSE':
+          if (!data.payload) break;
+          setAllOrders(prev => prev.filter(o => o.table_id !== data.payload.tableId));
+          break;
+        case 'MENU_UPDATE':
+          setMenu(data.payload);
+          break;
+        case 'CATEGORIES_UPDATE':
+          setCategories(data.payload);
+          break;
+        case 'DETAILS_UPDATE':
+          setDetails(data.payload);
+          break;
+        case 'HISTORY_UPDATE':
+          setHistoryEvents(data.payload);
+          break;
+        case 'TRANSFER_REQUESTS_SYNC':
+          setTransferRequests(data.payload);
+          break;
+        case 'SETTINGS_UPDATE':
+          setSettings((prev: any) => ({ ...prev, ...data.payload }));
+          break;
+        case 'ORDER_UPDATE':
+          if (!data.payload) break;
+          setAllOrders(prev => prev.map(o => o.id === data.payload.id ? data.payload : o));
+          break;
+        case 'ORDER_NEW':
+          if (!data.payload) break;
+          setAllOrders(prev => {
+            const newOrders = data.payload.filter((newOrder: any) => !prev.some(o => o.id === newOrder.id));
+            return [...prev, ...newOrders];
+          });
+          break;
+        case 'ORDER_DELETED':
+          setAllOrders(prev => prev.filter(o => o.id !== data.payload.orderId));
+          break;
+        case 'NOTIFICATION':
+          if (notificationsEnabledRef.current) {
+            const toastId = `notif-${data.payload.message}`;
+            toast(data.payload.message, {
+              id: toastId,
+              icon: data.payload.type === 'success' ? '✅' : data.payload.type === 'warning' ? '⚠️' : 'ℹ️',
+            });
+          }
+          if (soundEnabledRef.current) {
+            try {
+              const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+              if (AudioContext) {
+                const ctx = new AudioContext();
+                const playBeep = (time: number) => {
+                  const osc = ctx.createOscillator();
+                  const gainNode = ctx.createGain();
+                  osc.type = 'sine';
+                  osc.frequency.setValueAtTime(880, time);
+                  osc.frequency.exponentialRampToValueAtTime(440, time + 0.1);
+                  gainNode.gain.setValueAtTime(0.1, time);
+                  gainNode.gain.exponentialRampToValueAtTime(0.01, time + 0.1);
+                  osc.connect(gainNode);
+                  gainNode.connect(ctx.destination);
+                  osc.start(time);
+                  osc.stop(time + 0.1);
+                };
+
+                playBeep(ctx.currentTime);
+                playBeep(ctx.currentTime + 0.15);
+              }
+            } catch (e) {
+              console.log('Audio play failed:', e);
+            }
+          }
+          break;
+        case 'FORCE_LOGOUT':
+          if (userRef.current?.role !== 'host') {
+            toast.error(data.payload.message);
+            setIsLoggedIn(false);
+            setUser(null);
+            localStorage.removeItem('isLoggedIn');
+            localStorage.removeItem('user');
+          }
+          break;
+      }
+    };
+
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+      ws.close();
+    };
+
+    ws.onclose = () => {
+      console.log('WebSocket connection closed. Reconnecting...');
+      socketRef.current = null;
+      // Exponential backoff for reconnection
+      const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
+      reconnectAttempts.current += 1;
+      reconnectTimeoutRef.current = setTimeout(connectWebSocket, delay);
+    };
+  };
+
+  const reconnectAttempts = useRef(0);
+
   useEffect(() => {
     if (isLoggedIn) {
       fetchUsers();
       fetchOrders();
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(`${protocol}//${window.location.host}`);
-      socketRef.current = ws;
+      connectWebSocket();
 
-      ws.onmessage = (event) => {
-        const data: WSEvent = JSON.parse(event.data);
-        switch (data.type) {
-          case 'TABLES_SYNC':
-            setTables(data.payload);
-            fetchOrders();
-            break;
-          case 'TABLE_UPDATE':
-            if (!data.payload) break;
-            setTables(prev => prev.map(t => t.id === data.payload.id ? data.payload : t));
-            if (selectedTable?.id === data.payload.id) {
-              setSelectedTable(data.payload);
-            }
-            break;
-          case 'TABLE_CLOSE':
-            if (!data.payload) break;
-            setAllOrders(prev => prev.filter(o => o.table_id !== data.payload.tableId));
-            break;
-          case 'MENU_UPDATE':
-            setMenu(data.payload);
-            break;
-          case 'CATEGORIES_UPDATE':
-            setCategories(data.payload);
-            break;
-          case 'DETAILS_UPDATE':
-            setDetails(data.payload);
-            break;
-          case 'HISTORY_UPDATE':
-            setHistoryEvents(data.payload);
-            break;
-          case 'SETTINGS_UPDATE':
-            setSettings((prev: any) => ({ ...prev, ...data.payload }));
-            break;
-          case 'ORDER_UPDATE':
-            if (!data.payload) break;
-            setAllOrders(prev => prev.map(o => o.id === data.payload.id ? data.payload : o));
-            break;
-          case 'ORDER_NEW':
-            if (!data.payload) break;
-            setAllOrders(prev => [...prev, ...data.payload]);
-            break;
-          case 'ORDER_DELETED':
-            setAllOrders(prev => prev.filter(o => o.id !== data.payload.orderId));
-            break;
-          case 'NOTIFICATION':
-            if (notificationsEnabledRef.current) {
-              toast(data.payload.message, {
-                icon: data.payload.type === 'success' ? '✅' : data.payload.type === 'warning' ? '⚠️' : 'ℹ️',
-              });
-            }
-            if (soundEnabledRef.current) {
-              try {
-                const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
-                if (AudioContext) {
-                  const ctx = new AudioContext();
-                  const playBeep = (time: number) => {
-                    const osc = ctx.createOscillator();
-                    const gainNode = ctx.createGain();
-                    osc.type = 'sine';
-                    osc.frequency.setValueAtTime(880, time);
-                    osc.frequency.exponentialRampToValueAtTime(440, time + 0.1);
-                    gainNode.gain.setValueAtTime(0.1, time);
-                    gainNode.gain.exponentialRampToValueAtTime(0.01, time + 0.1);
-                    osc.connect(gainNode);
-                    gainNode.connect(ctx.destination);
-                    osc.start(time);
-                    osc.stop(time + 0.1);
-                  };
-
-                  playBeep(ctx.currentTime);
-                  playBeep(ctx.currentTime + 0.15);
-                }
-              } catch (e) {
-                console.log('Audio play failed:', e);
-              }
-            }
-            break;
-          case 'FORCE_LOGOUT':
-            if (user?.role !== 'host') {
-              toast.error(data.payload.message);
-              setIsLoggedIn(false);
-              setUser(null);
-            }
-            break;
+      const handleVisibilityChange = () => {
+        if (document.visibilityState === 'visible') {
+          console.log('Tab visible, checking connection...');
+          if (socketRef.current?.readyState !== WebSocket.OPEN) {
+            connectWebSocket();
+          } else {
+            socketRef.current.send(JSON.stringify({ type: 'FULL_SYNC' }));
+          }
         }
       };
 
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-      };
+      document.addEventListener('visibilitychange', handleVisibilityChange);
 
-      ws.onclose = () => {
-        console.log('WebSocket connection closed.');
-      };
+      const syncInterval = setInterval(() => {
+        if (socketRef.current?.readyState === WebSocket.OPEN) {
+          socketRef.current.send(JSON.stringify({ type: 'FULL_SYNC' }));
+        }
+      }, 30000);
 
-      return () => ws.close();
+      return () => {
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+        clearInterval(syncInterval);
+        if (socketRef.current) socketRef.current.close();
+        if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      };
     }
   }, [isLoggedIn]);
 
@@ -504,59 +706,91 @@ export default function App() {
           </button>
         </div>
         
-        <nav className="flex-1 space-y-1 p-3">
-          <SidebarItem 
-            icon={<LayoutDashboard />} 
-            label="Mesas" 
-            active={activeTab === 'mesas'} 
-            onClick={() => { setActiveTab('mesas'); setIsSidebarOpen(false); }} 
-          />
-          <SidebarItem 
-            icon={<MenuIcon />} 
-            label="Cardápio" 
-            active={activeTab === 'cardapio'} 
-            onClick={() => { setActiveTab('cardapio'); setIsSidebarOpen(false); }} 
-          />
-          <SidebarItem 
-            icon={<LayoutDashboard />} 
-            label="Histórico" 
-            active={activeTab === 'historico'} 
-            onClick={() => { setActiveTab('historico'); setIsSidebarOpen(false); }} 
-          />
-          {(user?.role === 'host' || user?.role === 'admin') && (
+        <nav className="flex-1 space-y-1 p-3 overflow-y-auto">
+          {hasPermission('mesas') && (
             <SidebarItem 
-              icon={<Database />} 
-              label="ERP" 
-              active={activeTab === 'erp'} 
-              onClick={() => { setActiveTab('erp'); setIsSidebarOpen(false); }} 
+              icon={<LayoutDashboard />} 
+              label="Mesas" 
+              active={activeTab === 'mesas'} 
+              onClick={() => { 
+                vibrate(20);
+                setActiveTab('mesas'); 
+                setIsSidebarOpen(false); 
+              }} 
             />
           )}
-          <SidebarItem 
-            icon={<Settings />} 
-            label="Configurações" 
-            active={activeTab === 'config'} 
-            onClick={() => { setActiveTab('config'); setIsSidebarOpen(false); }} 
-          />
+          {hasPermission('historico') && (
+            <SidebarItem 
+              icon={<History />} 
+              label="Histórico" 
+              active={activeTab === 'historico'} 
+              onClick={() => { 
+                vibrate(20);
+                setActiveTab('historico'); 
+                setIsSidebarOpen(false); 
+              }} 
+            />
+          )}
+          {hasPermission('cardapio') && (
+            <SidebarItem 
+              icon={<MenuIcon />} 
+              label="Cardápio" 
+              active={activeTab === 'cardapio'} 
+              onClick={() => { 
+                vibrate(20);
+                setActiveTab('cardapio'); 
+                setIsSidebarOpen(false); 
+              }} 
+            />
+          )}
+          {hasPermission('config') && (
+            <SidebarItem 
+              icon={<Settings />} 
+              label="Configurações" 
+              active={activeTab === 'config'} 
+              onClick={() => { 
+                vibrate(20);
+                setActiveTab('config'); 
+                setIsSidebarOpen(false); 
+              }} 
+            />
+          )}
+          {hasPermission('gestao') && (
+            <SidebarItem 
+              icon={<Database />} 
+              label="Gestão" 
+              active={activeTab === 'gestao'} 
+              onClick={() => { 
+                vibrate(20);
+                setActiveTab('gestao'); 
+                setIsSidebarOpen(false); 
+              }} 
+            />
+          )}
         </nav>
 
-        <div className="border-t border-zinc-100 p-4 dark:border-zinc-800">
+        <div className="mt-auto border-t border-zinc-100 p-4 dark:border-zinc-800">
           <div className="mb-4 flex items-center px-2">
             <div className={cn(
-              "h-10 w-10 rounded-full flex items-center justify-center shadow-sm border",
+              "h-10 w-10 rounded-full flex items-center justify-center shadow-sm border text-xl",
               user?.role === 'host' ? "bg-purple-100 text-purple-600 border-purple-200 dark:bg-purple-900/30 dark:text-purple-400 dark:border-purple-800/50" :
               user?.role === 'waiter' ? "bg-blue-100 text-blue-600 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:border-blue-800/50" :
               user?.role === 'kitchen' ? "bg-amber-100 text-amber-600 border-amber-200 dark:bg-amber-900/30 dark:text-amber-400 dark:border-amber-800/50" :
+              user?.role === 'caixa' ? "bg-emerald-100 text-emerald-600 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400 dark:border-emerald-800/50" :
               "bg-zinc-100 text-zinc-600 border-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:border-zinc-700"
             )}>
-              {user?.role === 'host' ? <UserCircle className="h-6 w-6" /> :
-               user?.role === 'waiter' ? <Users className="h-5 w-5" /> :
-               user?.role === 'kitchen' ? <ChefHat className="h-5 w-5" /> :
-               <UserCircle className="h-5 w-5" />}
+              {user?.avatar ? user.avatar : (
+                user?.role === 'host' ? <UserCircle className="h-6 w-6" /> :
+                user?.role === 'waiter' ? <Users className="h-5 w-5" /> :
+                user?.role === 'kitchen' ? <ChefHat className="h-5 w-5" /> :
+                user?.role === 'caixa' ? <DollarSign className="h-5 w-5" /> :
+                <UserCircle className="h-5 w-5" />
+              )}
             </div>
             <div className="ml-3">
               <p className="text-sm font-semibold dark:text-zinc-200">{user?.username}</p>
               <p className="text-xs font-medium text-zinc-500 capitalize dark:text-zinc-400">
-                {user?.role === 'waiter' ? 'Garçom' : user?.role === 'kitchen' ? 'Cozinha' : user?.role}
+                {user?.role === 'waiter' ? 'Garçom' : user?.role === 'kitchen' ? 'Cozinha' : user?.role === 'caixa' ? 'Caixa' : user?.role}
               </p>
             </div>
           </div>
@@ -564,40 +798,73 @@ export default function App() {
             <LogOut className="mr-2 h-4 w-4" />
             Sair
           </Button>
+
+          <div className="mt-4 px-2 text-[10px] text-zinc-400 dark:text-zinc-500 space-y-1 border-t border-zinc-100 pt-4 dark:border-zinc-800/50">
+            <p className="font-medium text-zinc-400">Versão 1.1.4 beta</p>
+            <div className="opacity-70">
+              <p>Created by: Abiner</p>
+              <p>Email for contact: abinerfelipe@gmail.com</p>
+            </div>
+          </div>
         </div>
       </aside>
 
       {/* Overlay for mobile sidebar */}
       {isSidebarOpen && (
         <div 
-          className="fixed inset-0 z-40 bg-black/50 md:hidden"
+          className="fixed inset-0 z-40 bg-black/50 md:hidden backdrop-blur-sm transition-all"
           onClick={() => setIsSidebarOpen(false)}
         />
       )}
 
       {/* Main Content */}
-      <main className="flex flex-1 flex-col overflow-hidden overscroll-none touch-pan-y">
-        <header className="flex h-[calc(3.5rem+env(safe-area-inset-top))] items-end justify-between border-b border-zinc-200 bg-white px-4 pb-3 md:px-6 dark:bg-zinc-900 dark:border-zinc-800">
+      <main className="flex flex-1 flex-col overflow-hidden overscroll-none touch-pan-y min-h-0">
+        <header className="flex h-[calc(4rem+env(safe-area-inset-top))] items-end justify-between border-b border-zinc-200 bg-white px-4 pb-4 md:px-6 dark:bg-zinc-900 dark:border-zinc-800">
           <div className="flex items-center gap-4">
-            <button onClick={() => setIsSidebarOpen(true)} className="md:hidden text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200">
-              <MenuIcon className="h-5 w-5" />
+            <button 
+              onClick={() => {
+                vibrate(40);
+                setIsSidebarOpen(true);
+              }} 
+              className="md:hidden p-2 -ml-2 text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200 active:bg-zinc-100 dark:active:bg-zinc-800 rounded-lg transition-colors"
+            >
+              <MenuIcon className="h-7 w-7" />
             </button>
-            <h2 className="text-base font-semibold capitalize dark:text-zinc-100">{activeTab}</h2>
+            <h2 className="text-base font-semibold capitalize dark:text-zinc-100">
+              {activeTab === 'gestao' ? 'Gestão' : 
+               activeTab === 'historico' ? 'Histórico' : 
+               activeTab === 'cardapio' ? 'Cardápio' : 
+               activeTab === 'config' ? 'Configurações' : 
+               activeTab}
+            </h2>
           </div>
           <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <div className={cn(
-                "h-2 w-2 rounded-full",
-                firebaseStatus === 'connected' ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" :
-                firebaseStatus === 'connecting' ? "bg-amber-500 animate-pulse" :
-                "bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.5)]"
-              )} />
-              <span className="text-[10px] font-medium text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">
-                {firebaseStatus === 'connected' ? 'Nuvem OK' :
-                 firebaseStatus === 'connecting' ? 'Sincronizando...' :
-                 'Erro Nuvem'}
-              </span>
-            </div>
+            <Button 
+              variant="ghost" 
+              className="h-8 px-2 text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700 dark:hover:bg-emerald-900/20" 
+              onClick={() => {
+                vibrate([30, 50, 30]);
+                toast.promise(
+                  new Promise((resolve, reject) => {
+                    if (socketRef.current?.readyState === WebSocket.OPEN) {
+                      socketRef.current.send(JSON.stringify({ type: 'FULL_SYNC' }));
+                      setTimeout(resolve, 1000);
+                    } else {
+                      connectWebSocket();
+                      setTimeout(resolve, 2000);
+                    }
+                  }),
+                  {
+                    loading: 'Sincronizando...',
+                    success: 'Sincronização concluída!',
+                    error: 'Erro ao sincronizar',
+                  }
+                );
+              }}
+            >
+              <RefreshCw className="h-4 w-4 mr-1" />
+              <span className="text-[10px] font-bold uppercase">Sincronizar</span>
+            </Button>
             {activeTab === 'mesas' && (
               <div className="flex items-center gap-2 text-[10px]">
                 <span className="flex items-center gap-1"><div className="h-1.5 w-1.5 rounded-full bg-zinc-200 dark:bg-zinc-700" /> <span className="dark:text-zinc-400">Livre</span></span>
@@ -608,7 +875,7 @@ export default function App() {
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto overscroll-none p-4 md:p-6" style={{ WebkitOverflowScrolling: 'touch' }}>
+        <div className="flex-1 overflow-y-auto overscroll-none p-4 md:p-6 pb-24 md:pb-12" style={{ WebkitOverflowScrolling: 'touch' }}>
           {activeTab === 'mesas' && (
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
               {tables.map((table) => (
@@ -616,6 +883,7 @@ export default function App() {
                   key={table.id} 
                   table={table} 
                   onClick={() => {
+                    vibrate(30);
                     setSelectedTable(table);
                     setIsTableModalOpen(true);
                   }} 
@@ -626,9 +894,9 @@ export default function App() {
 
           {activeTab === 'cardapio' && (
             <MenuTab 
-              menu={menu} 
-              categories={categories}
-              details={details}
+              menu={sortedMenu} 
+              categories={sortedCategories}
+              details={sortedGroups}
               canEdit={false} 
               onAdd={() => setIsAddMenuModalOpen(true)} 
               onEdit={(item: any) => {
@@ -639,29 +907,47 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'erp' && (user?.role === 'host' || user?.role === 'admin') && (
-            <ERPTab 
-              menu={menu} 
-              categories={categories}
-              details={details}
+          {activeTab === 'gestao' && hasPermission('gestao') && (
+            <GestaoTab 
+              menu={sortedMenu} 
+              categories={sortedCategories}
+              details={sortedGroups}
               sendWS={sendWS}
               onAddMenu={() => setIsAddMenuModalOpen(true)}
               onEditMenu={(item: any) => {
                 setEditingMenuItem(item);
                 setIsEditMenuModalOpen(true);
               }}
-              onResetHistory={() => {}}
+              onResetHistory={() => {
+                sendWS('HISTORY_CLEAR', { userId: user?.id, username: user?.username });
+              }}
               currentUser={user}
+              settings={settings}
+              hasPermission={hasPermission}
+              users={users}
+              onRefreshUsers={fetchUsers}
+              onAddUser={() => setIsAddUserModalOpen(true)}
+              onEditUser={(u: any) => {
+                setEditingUser(u);
+                setIsEditUserModalOpen(true);
+              }}
+              transferRequests={transferRequests}
+              allOrders={allOrders}
+              vibrate={vibrate}
             />
           )}
 
           {activeTab === 'historico' && (
             <HistoryTab 
               events={historyEvents} 
-              isHost={user?.role === 'host'}
+              canMarkRead={hasPermission('mark_history_read')}
               onMarkRead={(historyId: string) => {
                 sendWS('HISTORY_MARK_READ', { historyId, userId: user?.id, username: user?.username });
               }}
+              transferRequests={transferRequests}
+              onApproveTransfer={(requestId: string) => sendWS('TABLE_TRANSFER_APPROVE', { requestId, userId: user?.id, username: user?.username })}
+              onRejectTransfer={(requestId: string) => sendWS('TABLE_TRANSFER_REJECT', { requestId, userId: user?.id, username: user?.username })}
+              hasTransferPermission={hasPermission('transfer_table')}
             />
           )}
 
@@ -671,6 +957,12 @@ export default function App() {
               settings={settings}
               darkMode={darkMode}
               setDarkMode={setDarkMode}
+              displayScale={displayScale}
+              setDisplayScale={setDisplayScale}
+              fontSize={fontSize}
+              setFontSize={setFontSize}
+              vibrationEnabled={vibrationEnabled}
+              setVibrationEnabled={setVibrationEnabled}
               notificationsEnabled={notificationsEnabled}
               setNotificationsEnabled={setNotificationsEnabled}
               soundEnabled={soundEnabled}
@@ -692,7 +984,7 @@ export default function App() {
                 try {
                   const res = await fetch('/api/admin/reset-history', { 
                     method: 'POST',
-                    headers: { 'x-user-id': user?.id || '' }
+                    headers: { 'x-app-user-id': user?.id || '' }
                   });
                   const data = await res.json();
                   if (data.success) {
@@ -704,6 +996,7 @@ export default function App() {
                   toast.error('Erro de conexão ao limpar histórico');
                 }
               }}
+              hasPermission={hasPermission}
             />
           )}
         </div>
@@ -715,6 +1008,7 @@ export default function App() {
         onClose={() => setIsTableModalOpen(false)} 
         table={selectedTable}
         orders={currentOrders}
+        details={details}
         isHost={user?.role === 'host'}
         onOpenTable={(data) => {
           sendWS('TABLE_OPEN', { tableId: selectedTable?.id, userId: user?.id, username: user?.username, ...data });
@@ -740,14 +1034,26 @@ export default function App() {
             }
           });
         }}
+        canDeleteOrder={hasPermission('delete_order')}
+        onTransferTable={(fromTableId: number, toTableId: number, orderIds: string[], targetType: string) => {
+          if (hasPermission('transfer_table')) {
+            sendWS('TABLE_TRANSFER', { fromTableId, toTableId, orderIds, userId: user?.id, username: user?.username, targetType });
+          } else {
+            sendWS('TABLE_TRANSFER_REQUEST', { fromTableId, toTableId, orderIds, userId: user?.id, username: user?.username, targetType });
+          }
+          setIsTableModalOpen(false);
+        }}
+        canTransfer={hasPermission('transfer_table')}
+        allTables={tables}
       />
 
       <Modal isOpen={isConfirmBillModalOpen} onClose={() => setIsConfirmBillModalOpen(false)} title="Pedir Conta">
         <div className="space-y-4">
-          <p className="text-zinc-600">Deseja realmente pedir a conta da Mesa {selectedTable?.number}?</p>
+          <p className="text-zinc-600">Deseja realmente pedir a conta da Mesa {formatTableNumber(selectedTable?.number)}?</p>
           <div className="flex justify-end gap-3">
             <Button variant="outline" onClick={() => setIsConfirmBillModalOpen(false)}>Cancelar</Button>
             <Button onClick={() => {
+              vibrate(50);
               sendWS('TABLE_REQUEST_BILL', { tableId: selectedTable?.id, userId: user?.id, username: user?.username });
               setIsConfirmBillModalOpen(false);
               setIsTableModalOpen(false);
@@ -817,10 +1123,12 @@ export default function App() {
       <OrderModal 
         isOpen={isOrderModalOpen} 
         onClose={() => setIsOrderModalOpen(false)} 
-        menu={menu}
-        categories={categories}
-        details={details}
+        menu={sortedMenu}
+        categories={sortedCategories}
+        details={sortedGroups}
+        vibrate={vibrate}
         onSend={(items) => {
+          vibrate([50, 30, 50]);
           sendWS('ORDER_SEND', { tableId: selectedTable?.id, userId: user?.id, username: user?.username, items });
           setIsOrderModalOpen(false);
         }}
@@ -848,8 +1156,8 @@ export default function App() {
         isOpen={isAddMenuModalOpen} 
         onClose={() => setIsAddMenuModalOpen(false)} 
         onSave={(data) => sendWS('MENU_ADD', data)}
-        categories={categories}
-        details={details}
+        categories={sortedCategories}
+        details={sortedGroups}
       />
 
       <EditMenuModal 
@@ -860,8 +1168,8 @@ export default function App() {
         }} 
         onSave={(data: any) => sendWS('MENU_EDIT', data)}
         item={editingMenuItem}
-        categories={categories}
-        details={details}
+        categories={sortedCategories}
+        details={sortedGroups}
       />
 
       <Modal
@@ -913,17 +1221,36 @@ function SidebarItem({ icon, label, active, onClick }: { icon: React.ReactNode; 
   );
 }
 
-function TableActionsModal({ isOpen, onClose, table, orders, isHost, onOpenTable, onRequestBill, onAddOrder, onCloseTable, onMarkRead, onUpdateTable, onDeleteOrder }: any) {
+function TableActionsModal({ isOpen, onClose, table, orders, isHost, onOpenTable, onRequestBill, onAddOrder, onCloseTable, onMarkRead, onUpdateTable, onDeleteOrder, canDeleteOrder, onTransferTable, canTransfer, allTables, details = [] }: any) {
   const [isEditing, setIsEditing] = useState(false);
+  const [isTransferring, setIsTransferring] = useState(false);
+  const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
+  const [targetTable, setTargetTable] = useState<string>('');
+  const [tableType, setTableType] = useState<'salao' | 'gramado'>('salao');
 
   useEffect(() => {
-    if (!isOpen) setIsEditing(false);
+    if (!isOpen) {
+      setIsEditing(false);
+      setIsTransferring(false);
+      setSelectedOrders([]);
+      setTargetTable('');
+      setTableType('salao');
+    }
   }, [isOpen]);
 
   if (!table) return null;
 
+  const handleTransfer = () => {
+    if (!targetTable || selectedOrders.length === 0) {
+      toast.error('Selecione a mesa de destino e pelo menos um item');
+      return;
+    }
+    onTransferTable(table.id, parseInt(targetTable), selectedOrders, tableType);
+    setIsTransferring(false);
+  };
+
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title={`Mesa ${table.number}`}>
+    <Modal isOpen={isOpen} onClose={onClose} title={`Mesa ${formatTableNumber(table.number)}`}>
       <div className="space-y-6">
         {table.status === 'free' ? (
           <form onSubmit={(e) => {
@@ -931,9 +1258,41 @@ function TableActionsModal({ isOpen, onClose, table, orders, isHost, onOpenTable
             const formData = new FormData(e.currentTarget);
             onOpenTable({
               customerName: formData.get('name'),
-              peopleCount: parseInt(formData.get('people') as string) || 0
+              peopleCount: parseInt(formData.get('people') as string) || 0,
+              tableType
             });
           }} className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium dark:text-zinc-300">Tipo de Mesa</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setTableType('salao')}
+                  className={cn(
+                    "flex items-center justify-center gap-2 p-3 rounded-xl border-2 transition-all",
+                    tableType === 'salao' 
+                      ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-400" 
+                      : "border-zinc-100 bg-zinc-50 text-zinc-500 dark:bg-zinc-800 dark:border-zinc-700"
+                  )}
+                >
+                  <Home className="h-4 w-4" />
+                  <span className="text-xs font-bold uppercase">Salão</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTableType('gramado')}
+                  className={cn(
+                    "flex items-center justify-center gap-2 p-3 rounded-xl border-2 transition-all",
+                    tableType === 'gramado' 
+                      ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400" 
+                      : "border-zinc-100 bg-zinc-50 text-zinc-500 dark:bg-zinc-800 dark:border-zinc-700"
+                  )}
+                >
+                  <Trees className="h-4 w-4" />
+                  <span className="text-xs font-bold uppercase">Gramado</span>
+                </button>
+              </div>
+            </div>
             <div className="space-y-2">
               <label className="text-sm font-medium dark:text-zinc-300">Nome do Cliente (Opcional)</label>
               <Input name="name" placeholder="Ex: João Silva" />
@@ -946,107 +1305,225 @@ function TableActionsModal({ isOpen, onClose, table, orders, isHost, onOpenTable
           </form>
         ) : (
           <div className="space-y-4">
-            <div className="rounded-xl bg-zinc-50 p-4 dark:bg-zinc-800">
-              {!isEditing ? (
-                <>
-                  <div className="flex justify-between text-sm items-center">
-                    <span className="text-zinc-500 dark:text-zinc-400">Cliente:</span>
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold dark:text-zinc-200">{table.customer_name || 'Não informado'}</span>
-                      <button onClick={() => setIsEditing(true)} className="text-emerald-600 hover:text-emerald-700 dark:text-emerald-400">
-                        <Edit2 className="h-3 w-3" />
-                      </button>
-                    </div>
+            {isTransferring ? (
+              <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-sm font-bold uppercase text-zinc-500">Transferir Itens</h4>
+                  <Button variant="ghost" size="sm" onClick={() => setIsTransferring(false)}>Cancelar</Button>
+                </div>
+                
+                <div className="space-y-2">
+                  <label className="text-xs font-medium dark:text-zinc-400">Tipo da Mesa de Destino</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setTableType('salao')}
+                      className={cn(
+                        "flex items-center justify-center gap-2 p-2 rounded-xl border-2 transition-all",
+                        tableType === 'salao' 
+                          ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-400" 
+                          : "border-zinc-100 bg-zinc-50 text-zinc-500 dark:bg-zinc-800 dark:border-zinc-700"
+                      )}
+                    >
+                      <Home className="h-4 w-4" />
+                      <span className="text-[10px] font-bold uppercase">Salão</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTableType('gramado')}
+                      className={cn(
+                        "flex items-center justify-center gap-2 p-2 rounded-xl border-2 transition-all",
+                        tableType === 'gramado' 
+                          ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400" 
+                          : "border-zinc-100 bg-zinc-50 text-zinc-500 dark:bg-zinc-800 dark:border-zinc-700"
+                      )}
+                    >
+                      <Trees className="h-4 w-4" />
+                      <span className="text-[10px] font-bold uppercase">Gramado</span>
+                    </button>
                   </div>
-                  <div className="mt-2 flex justify-between text-sm">
-                    <span className="text-zinc-500 dark:text-zinc-400">Pessoas:</span>
-                    <span className="font-semibold dark:text-zinc-200">{table.people_count || 0}</span>
-                  </div>
-                  <div className="mt-2 flex justify-between text-sm">
-                    <span className="text-zinc-500 dark:text-zinc-400">Aberta em:</span>
-                    <span className="font-semibold dark:text-zinc-200">{table.opened_at ? format(new Date(table.opened_at), 'HH:mm') : '-'}</span>
-                  </div>
-                </>
-              ) : (
-                <form onSubmit={(e) => {
-                  e.preventDefault();
-                  const formData = new FormData(e.currentTarget);
-                  onUpdateTable({
-                    customerName: formData.get('name'),
-                    peopleCount: parseInt(formData.get('people') as string) || 0
-                  });
-                  setIsEditing(false);
-                }} className="space-y-3">
-                  <div className="space-y-1">
-                    <label className="text-xs font-medium dark:text-zinc-300">Nome</label>
-                    <Input name="name" defaultValue={table.customer_name} className="h-8 text-sm" />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-xs font-medium dark:text-zinc-300">Pessoas</label>
-                    <Input name="people" type="number" defaultValue={table.people_count} className="h-8 text-sm" />
-                  </div>
-                  <div className="flex gap-2 pt-1">
-                    <Button type="submit" className="h-8 text-xs flex-1">Salvar</Button>
-                    <Button type="button" variant="ghost" onClick={() => setIsEditing(false)} className="h-8 text-xs">Cancelar</Button>
-                  </div>
-                </form>
-              )}
-            </div>
+                </div>
 
-            <div className="space-y-2">
-              <h4 className="text-xs font-bold uppercase text-zinc-400">Pedidos Atuais</h4>
-              <div className="max-h-40 overflow-y-auto overscroll-contain rounded-lg border border-zinc-100 bg-white dark:bg-zinc-900 dark:border-zinc-800" style={{ WebkitOverflowScrolling: 'touch' }}>
-                {orders.length === 0 ? (
-                  <p className="p-4 text-center text-xs text-zinc-400 dark:text-zinc-500">Nenhum pedido realizado</p>
-                ) : (
-                  <div className="divide-y divide-zinc-50 dark:divide-zinc-800">
+                <div className="space-y-2">
+                  <label className="text-xs font-medium dark:text-zinc-400">Mesa de Destino</label>
+                  <select 
+                    value={targetTable}
+                    onChange={(e) => setTargetTable(e.target.value)}
+                    className="w-full h-10 rounded-xl border border-zinc-200 bg-white px-3 text-sm dark:bg-zinc-900 dark:border-zinc-800 dark:text-zinc-200"
+                  >
+                    <option value="">Selecione uma mesa...</option>
+                    {allTables
+                      .filter((t: any) => t.id !== table.id)
+                      .map((t: any) => (
+                        <option key={t.id} value={t.id}>
+                          Mesa {formatTableNumber(t.number)} {t.status === 'open' ? `(${t.customer_name})` : '(Livre)'}
+                        </option>
+                      ))
+                    }
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-medium dark:text-zinc-400">Selecione os Itens</label>
+                    <button 
+                      onClick={() => setSelectedOrders(selectedOrders.length === orders.length ? [] : orders.map((o: any) => o.id))}
+                      className="text-[10px] font-bold uppercase text-emerald-600"
+                    >
+                      {selectedOrders.length === orders.length ? 'Desmarcar Todos' : 'Selecionar Todos'}
+                    </button>
+                  </div>
+                  <div className="max-h-48 overflow-y-auto rounded-xl border border-zinc-100 dark:border-zinc-800 divide-y divide-zinc-50 dark:divide-zinc-800">
                     {orders.map((order: any) => (
-                      <div key={order.id} className="flex flex-col p-3 text-sm">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-3">
-                            <span className="dark:text-zinc-200">
-                              {order.quantity}x {order.item_name}
-                              {(order.category || order.group) && (
-                                <span className="text-xs text-zinc-500 dark:text-zinc-400 ml-2">
-                                  ({[order.category, order.group].filter(Boolean).join(' - ')})
-                                </span>
-                              )}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs text-zinc-400 dark:text-zinc-500">{format(new Date(order.timestamp), 'HH:mm')}</span>
-                            <button 
-                              onClick={() => onDeleteOrder(order.id)} 
-                              className="text-rose-500 hover:bg-rose-50 p-1 rounded dark:hover:bg-rose-900/20 transition-colors"
-                              title="Excluir pedido"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
+                      <label key={order.id} className="flex items-center gap-3 p-3 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 cursor-pointer transition-colors">
+                        <input 
+                          type="checkbox" 
+                          checked={selectedOrders.includes(order.id)}
+                          onChange={(e) => {
+                            if (e.target.checked) setSelectedOrders([...selectedOrders, order.id]);
+                            else setSelectedOrders(selectedOrders.filter(id => id !== order.id));
+                          }}
+                          className="h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500"
+                        />
+                        <div className="flex-1">
+                          <p className="text-sm font-medium dark:text-zinc-200">{order.quantity}x {order.item_name}</p>
+                          {order.group && <p className="text-[10px] text-zinc-500">({order.group})</p>}
                         </div>
-                        {order.observation && (
-                          <div className="text-xs text-zinc-500 dark:text-zinc-400 italic mt-1">
-                            Obs: {order.observation}
-                          </div>
-                        )}
-                      </div>
+                      </label>
                     ))}
                   </div>
-                )}
-              </div>
-            </div>
+                </div>
 
-            <div className="grid grid-cols-1 gap-3">
-              <Button onClick={onAddOrder} variant="outline" className="justify-start">
-                <Plus className="mr-2 h-4 w-4" /> Adicionar Pedido
-              </Button>
-              <Button onClick={onRequestBill} variant="outline" className="justify-start text-amber-600 hover:bg-amber-50">
-                <DollarSign className="mr-2 h-4 w-4" /> Pedir Conta
-              </Button>
-              <Button onClick={onCloseTable} variant="danger" className="justify-start">
-                <CheckCircle2 className="mr-2 h-4 w-4" /> Fechar Mesa
-              </Button>
-            </div>
+                <Button onClick={handleTransfer} className="w-full bg-emerald-600 hover:bg-emerald-700">
+                  {canTransfer ? 'Confirmar Transferência' : 'Solicitar Transferência'}
+                </Button>
+              </div>
+            ) : (
+              <>
+                <div className="rounded-xl bg-zinc-50 p-4 dark:bg-zinc-800">
+                  {!isEditing ? (
+                    <>
+                      <div className="flex justify-between text-sm items-center">
+                        <span className="text-zinc-500 dark:text-zinc-400">Cliente:</span>
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold dark:text-zinc-200">{table.customer_name || 'Não informado'}</span>
+                          <button onClick={() => setIsEditing(true)} className="text-emerald-600 hover:text-emerald-700 dark:text-emerald-400">
+                            <Edit2 className="h-3 w-3" />
+                          </button>
+                        </div>
+                      </div>
+                      <div className="mt-2 flex justify-between text-sm">
+                        <span className="text-zinc-500 dark:text-zinc-400">Tipo:</span>
+                        <span className={cn(
+                          "font-bold px-2 py-0.5 rounded-full text-[10px] uppercase",
+                          table.type === 'gramado' ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" : "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+                        )}>
+                          {table.type === 'gramado' ? 'Gramado' : 'Salão'}
+                        </span>
+                      </div>
+                      <div className="mt-2 flex justify-between text-sm">
+                        <span className="text-zinc-500 dark:text-zinc-400">Pessoas:</span>
+                        <span className="font-semibold dark:text-zinc-200">{table.people_count || 0}</span>
+                      </div>
+                      <div className="mt-2 flex justify-between text-sm">
+                        <span className="text-zinc-500 dark:text-zinc-400">Aberta em:</span>
+                        <span className="font-semibold dark:text-zinc-200">{table.opened_at ? format(new Date(table.opened_at), 'HH:mm') : '-'}</span>
+                      </div>
+                    </>
+                  ) : (
+                    <form onSubmit={(e) => {
+                      e.preventDefault();
+                      const formData = new FormData(e.currentTarget);
+                      onUpdateTable({
+                        customerName: formData.get('name'),
+                        peopleCount: parseInt(formData.get('people') as string) || 0
+                      });
+                      setIsEditing(false);
+                    }} className="space-y-3">
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium dark:text-zinc-300">Nome</label>
+                        <Input name="name" defaultValue={table.customer_name} className="h-8 text-sm" />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium dark:text-zinc-300">Pessoas</label>
+                        <Input name="people" type="number" defaultValue={table.people_count} className="h-8 text-sm" />
+                      </div>
+                      <div className="flex gap-2 pt-1">
+                        <Button type="submit" className="h-8 text-xs flex-1">Salvar</Button>
+                        <Button type="button" variant="ghost" onClick={() => setIsEditing(false)} className="h-8 text-xs">Cancelar</Button>
+                      </div>
+                    </form>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <h4 className="text-xs font-bold uppercase text-zinc-400">Pedidos Atuais</h4>
+                  <div className="max-h-[300px] md:max-h-[400px] overflow-y-auto overscroll-contain rounded-lg border border-zinc-100 bg-white dark:bg-zinc-900 dark:border-zinc-800" style={{ WebkitOverflowScrolling: 'touch' }}>
+                    {orders.length === 0 ? (
+                      <p className="p-4 text-center text-xs text-zinc-400 dark:text-zinc-500">Nenhum pedido realizado</p>
+                    ) : (
+                      <div className="divide-y divide-zinc-50 dark:divide-zinc-800">
+                        {orders.map((order: any) => (
+                          <div key={order.id} className="flex flex-col p-3 text-sm">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-3">
+                                <span className="dark:text-zinc-200">
+                                  <span className="text-zinc-900 dark:text-zinc-100 font-bold">{order.quantity}x</span> - {order.item_name}
+                                  {(() => {
+                                    const group = details.find((d: any) => d.name === order.group);
+                                    if (order.group && (!group || group.show_in_history !== 0)) {
+                                      return (
+                                        <span className="text-xs text-zinc-500 dark:text-zinc-400 ml-2">
+                                          -({order.group})
+                                        </span>
+                                      );
+                                    }
+                                    return null;
+                                  })()}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs text-zinc-400 dark:text-zinc-500">{format(new Date(order.timestamp), 'HH:mm')}</span>
+                                {canDeleteOrder && (
+                                  <button 
+                                    onClick={() => onDeleteOrder(order.id)} 
+                                    className="text-rose-500 hover:bg-rose-50 p-1 rounded dark:hover:bg-rose-900/20 transition-colors"
+                                    title="Excluir pedido"
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                            {order.observation && (
+                              <div className="text-xs text-amber-600 dark:text-amber-400 italic mt-1 flex items-center gap-1 bg-amber-50 dark:bg-amber-900/20 p-1 rounded">
+                                <StickyNote className="h-3 w-3" />
+                                <span>Obs: {order.observation}</span>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <Button onClick={onAddOrder} className="bg-green-600 hover:bg-green-700 col-span-2">
+                    <Plus className="mr-2 h-4 w-4" /> Adicionar Pedido
+                  </Button>
+                  <Button onClick={() => setIsTransferring(true)} variant="ghost" className="border-zinc-200 dark:border-zinc-700">
+                    <MoveRight className="mr-2 h-4 w-4" /> Transferir
+                  </Button>
+                  <Button onClick={onRequestBill} className="bg-amber-700 hover:bg-amber-800 dark:bg-amber-700 dark:hover:bg-amber-800 text-white shadow-sm">
+                    <DollarSign className="mr-2 h-4 w-4" /> Pedir Conta
+                  </Button>
+                  <Button onClick={onCloseTable} variant="danger" className="col-span-2">
+                    <CheckCircle2 className="mr-2 h-4 w-4" /> Fechar Mesa
+                  </Button>
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -1054,20 +1531,74 @@ function TableActionsModal({ isOpen, onClose, table, orders, isHost, onOpenTable
   );
 }
 
-function MenuTab({ menu, categories = [], details = [], canEdit, onAdd, onEdit, onWS }: any) {
+function MenuTab({ menu, categories = [], details = [], canEdit, onAdd, onEdit, onWS, vibrate }: any) {
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [sortBy, setSortBy] = useState('alphabetical');
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, title: '', message: '', onConfirm: () => {} });
 
-  const filteredMenu = menu.filter((item: any) => {
-    if (search) {
-      return item.name.toLowerCase().includes(search.toLowerCase());
+  const filteredMenu = useMemo(() => {
+    let items = menu.filter((item: any) => {
+      if (search) {
+        const normalizedSearch = search.normalize('NFD').replace(/[\u0300-\u036f]/g, "").toLowerCase();
+        const normalizedName = item.name.normalize('NFD').replace(/[\u0300-\u036f]/g, "").toLowerCase();
+        return normalizedName.includes(normalizedSearch);
+      }
+      
+      const matchesCategory = activeCategory ? item.type === activeCategory : true;
+      const matchesGroup = (activeGroup && activeGroup !== 'ALL') ? item.category === activeGroup : true;
+      
+      return matchesCategory && matchesGroup;
+    });
+
+    if (!activeCategory) {
+      switch (sortBy) {
+        case 'alphabetical':
+          items = [...items].sort((a, b) => a.name.localeCompare(b.name));
+          break;
+        case 'recent':
+          items = [...items].sort((a, b) => b.id.localeCompare(a.id));
+          break;
+        case 'active':
+          items = items.filter((i: any) => i.active !== 0);
+          break;
+        case 'inactive':
+          items = items.filter((i: any) => i.active === 0);
+          break;
+        case 'category':
+          items = [...items].sort((a, b) => (a.type || '').localeCompare(b.type || ''));
+          break;
+        case 'group':
+          items = [...items].sort((a, b) => (a.category || '').localeCompare(b.category || ''));
+          break;
+      }
     }
-    const matchesCategory = activeCategory ? item.type === activeCategory : true;
-    const matchesGroup = activeGroup ? item.category === activeGroup : true;
-    return matchesCategory && matchesGroup;
-  });
+    
+    return items;
+  }, [menu, search, activeCategory, activeGroup, sortBy]);
+
+  const groupedMenu = useMemo(() => {
+    const groups: { [key: string]: any[] } = {};
+    filteredMenu.forEach(item => {
+      const groupName = item.category || 'Outros';
+      if (!groups[groupName]) groups[groupName] = [];
+      groups[groupName].push(item);
+    });
+    // Sort group names by sort_order, but keep 'Outros' at the end
+    return Object.keys(groups).sort((a, b) => {
+      if (a === 'Outros') return 1;
+      if (b === 'Outros') return -1;
+      const groupA = details.find((g: any) => g.name === a);
+      const groupB = details.find((g: any) => g.name === b);
+      const orderA = groupA?.sort_order ?? 999;
+      const orderB = groupB?.sort_order ?? 999;
+      return orderA - orderB;
+    }).map(key => ({
+      name: key,
+      items: groups[key].sort((a, b) => a.name.localeCompare(b.name))
+    }));
+  }, [filteredMenu, details]);
 
   const handleDownload = () => {
     window.location.href = '/api/menu/export';
@@ -1109,12 +1640,26 @@ function MenuTab({ menu, categories = [], details = [], canEdit, onAdd, onEdit, 
           <div className="flex items-center gap-2">
             <h4 className="font-semibold text-sm text-zinc-900 dark:text-zinc-100">{item.name}</h4>
             {item.active === 0 && <span className="rounded bg-zinc-200 px-1.5 py-0.5 text-[9px] font-bold text-zinc-600 dark:bg-zinc-700 dark:text-zinc-400">INATIVO</span>}
+            {item.print_enabled !== 0 && <Printer className="h-3 w-3 text-emerald-500" />}
           </div>
-          <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">{item.category} • R$ {item.price.toFixed(2)}</p>
+          <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">{item.type} &gt; {item.category} • R$ {item.price.toFixed(2)}</p>
         </div>
       </div>
       {canEdit && (
         <div className="flex gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+          <button
+            onClick={() => {
+              if (vibrate) vibrate(10);
+              onWS('MENU_TOGGLE_PRINT', { id: item.id, enabled: item.print_enabled === 0 });
+            }}
+            className={cn(
+              "p-1.5 rounded transition-colors",
+              item.print_enabled !== 0 ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-900/30 dark:text-emerald-400" : "text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+            )}
+            title={item.print_enabled !== 0 ? "Impressão Ativada" : "Impressão Desativada"}
+          >
+            <Printer className="h-3.5 w-3.5" />
+          </button>
           <button onClick={() => onEdit(item)} className="rounded p-1.5 text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20">
             <Edit2 className="h-3.5 w-3.5" />
           </button>
@@ -1146,62 +1691,65 @@ function MenuTab({ menu, categories = [], details = [], canEdit, onAdd, onEdit, 
         onConfirm={confirmModal.onConfirm} 
       />
       
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-        <div className="flex flex-1 gap-2">
-          <Input 
-            placeholder="Buscar no cardápio..." 
-            className="max-w-xs" 
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+      <div className="sticky top-0 z-20 bg-white/80 backdrop-blur-md dark:bg-zinc-950/80 py-2 space-y-4">
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div className="flex flex-1 gap-2">
+            <div className="relative flex-1 max-w-xs">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
+              <Input 
+                placeholder="Buscar no cardápio..." 
+                className="pl-10" 
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+          </div>
+          {canEdit && (
+            <div className="flex flex-wrap gap-2">
+              <input 
+                type="file" 
+                id="menu-upload" 
+                className="hidden" 
+                accept=".json" 
+                onChange={handleUpload} 
+              />
+              <Button variant="outline" onClick={() => document.getElementById('menu-upload')?.click()}>
+                <Upload className="mr-2 h-4 w-4" /> Importar
+              </Button>
+              <Button variant="outline" onClick={handleDownload}>
+                <Download className="mr-2 h-4 w-4" /> Exportar
+              </Button>
+              <Button onClick={onAdd}><Plus className="mr-2 h-4 w-4" /> Novo Produto</Button>
+            </div>
+          )}
         </div>
-        {canEdit && (
-          <div className="flex flex-wrap gap-2">
-            <input 
-              type="file" 
-              id="menu-upload" 
-              className="hidden" 
-              accept=".json" 
-              onChange={handleUpload} 
-            />
-            <Button variant="outline" onClick={() => document.getElementById('menu-upload')?.click()}>
-              <Upload className="mr-2 h-4 w-4" /> Importar
+
+        {!search && activeCategory && (
+          <div className="flex items-center justify-between bg-emerald-50 dark:bg-emerald-900/20 p-2 rounded-xl border border-emerald-100 dark:border-emerald-800/50">
+            <div className="flex items-center gap-2 text-sm font-medium text-emerald-700 dark:text-emerald-400">
+              <button 
+                onClick={() => { setActiveCategory(null); setActiveGroup(null); }} 
+                className="hover:underline"
+              >
+                Cardápio
+              </button>
+              <ChevronRight className="h-4 w-4" />
+              <span className="font-bold">{activeCategory}</span>
+            </div>
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              className="h-8 px-3 text-xs font-bold bg-white dark:bg-zinc-900 shadow-sm border border-emerald-200 dark:border-emerald-800 text-emerald-600 hover:bg-emerald-50"
+              onClick={() => {
+                setActiveCategory(null);
+                setActiveGroup(null);
+              }}
+            >
+              <ArrowLeft className="h-3.5 w-3.5 mr-1.5" /> Voltar
             </Button>
-            <Button variant="outline" onClick={handleDownload}>
-              <Download className="mr-2 h-4 w-4" /> Exportar
-            </Button>
-            <Button onClick={onAdd}><Plus className="mr-2 h-4 w-4" /> Novo Produto</Button>
           </div>
         )}
       </div>
-
-      {!search && (activeCategory || activeGroup) && (
-        <div className="flex items-center gap-2 text-sm font-medium text-zinc-500 dark:text-zinc-400">
-          <button 
-            onClick={() => { setActiveCategory(null); setActiveGroup(null); }} 
-            className="hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors"
-          >
-            Categorias
-          </button>
-          {activeCategory && (
-            <>
-              <ChevronRight className="h-4 w-4" />
-              <button 
-                onClick={() => setActiveGroup(null)} 
-                className={cn("hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors", !activeGroup && "text-zinc-900 dark:text-zinc-100")}
-              >
-                {activeCategory}
-              </button>
-            </>
-          )}
-          {activeGroup && (
-            <>
-              <ChevronRight className="h-4 w-4" />
-              <span className="text-zinc-900 dark:text-zinc-100">{activeGroup}</span>
-            </>
-          )}
-        </div>
-      )}
 
       {search ? (
         <div className="rounded-xl border border-zinc-200 overflow-hidden dark:border-zinc-800">
@@ -1218,7 +1766,6 @@ function MenuTab({ menu, categories = [], details = [], canEdit, onAdd, onEdit, 
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
               {categories.map((c: any) => {
                 const count = menu.filter((m: any) => m.type === c.name).length;
-                if (count === 0) return null;
                 return (
                   <button 
                     key={c.id} 
@@ -1230,56 +1777,61 @@ function MenuTab({ menu, categories = [], details = [], canEdit, onAdd, onEdit, 
                   </button>
                 );
               })}
-              {categories.filter((c: any) => menu.filter((m: any) => m.type === c.name).length > 0).length === 0 && (
+              {categories.length === 0 && (
                 <div className="col-span-full py-12 text-center text-zinc-500 dark:text-zinc-400">
-                  Nenhuma categoria com itens cadastrados.
-                </div>
-              )}
-            </div>
-          ) : !activeGroup ? (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-              {details.filter((g: any) => g.category_name === activeCategory).map((g: any) => {
-                const count = menu.filter((m: any) => m.type === activeCategory && m.category === g.name).length;
-                if (count === 0) return null;
-                return (
-                  <button 
-                    key={g.id} 
-                    onClick={() => setActiveGroup(g.name)}
-                    className="flex flex-col items-center justify-center gap-1 rounded-xl border border-zinc-200 bg-white p-3 shadow-sm transition-all hover:border-emerald-500 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-emerald-500"
-                  >
-                    <span className="text-lg font-bold text-zinc-900 dark:text-zinc-100">{g.name}</span>
-                    <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">{count} itens</span>
-                  </button>
-                );
-              })}
-              {details.filter((g: any) => g.category_name === activeCategory && menu.filter((m: any) => m.type === activeCategory && m.category === g.name).length > 0).length === 0 && (
-                <div className="col-span-full py-12 text-center text-zinc-500 dark:text-zinc-400">
-                  Nenhum detalhe com itens cadastrados.
+                  Nenhuma categoria cadastrada.
                 </div>
               )}
             </div>
           ) : (
-            <div className="rounded-xl border border-zinc-200 overflow-hidden dark:border-zinc-800">
-              {filteredMenu.map(renderItemCard)}
+            <div className="space-y-8">
+              {groupedMenu.map(({ name: groupName, items }: any) => (
+                <div key={groupName} className="space-y-3">
+                  <div className="flex items-center gap-3">
+                    <h3 className="text-sm font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-500 px-1">
+                      {groupName}
+                    </h3>
+                    <div className="h-px flex-1 bg-zinc-100 dark:bg-zinc-800" />
+                  </div>
+                  <div className="rounded-xl border border-zinc-200 overflow-hidden dark:border-zinc-800 bg-white dark:bg-zinc-900">
+                    {items.map(renderItemCard)}
+                  </div>
+                </div>
+              ))}
               {filteredMenu.length === 0 && (
                 <div className="py-12 text-center text-zinc-500 dark:text-zinc-400">
-                  Nenhum item nesta categoria e detalhe.
+                  Nenhum item disponível nesta categoria.
                 </div>
               )}
             </div>
           )}
 
-          {(!activeCategory || !activeGroup) && (
+          {!activeCategory && (
             <>
               <div className="my-8 border-t border-zinc-200 dark:border-zinc-800" />
-              <div className="mb-4 flex items-center justify-between">
+              <div className="mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <h3 className="text-lg font-bold text-zinc-900 dark:text-zinc-100">Todos os Itens</h3>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Organizar por:</label>
+                  <select 
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value)}
+                    className="text-xs bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  >
+                    <option value="alphabetical">Alfabética</option>
+                    <option value="recent">Mais recentes</option>
+                    <option value="active">Ativos</option>
+                    <option value="inactive">Inativos</option>
+                    <option value="category">Categorias</option>
+                    <option value="group">Grupos</option>
+                  </select>
+                </div>
               </div>
-              <div className="rounded-xl border border-zinc-200 overflow-hidden dark:border-zinc-800">
-                {menu.map(renderItemCard)}
-                {menu.length === 0 && (
+              <div className="rounded-xl border border-zinc-200 overflow-hidden dark:border-zinc-800 bg-white dark:bg-zinc-900">
+                {filteredMenu.map(renderItemCard)}
+                {filteredMenu.length === 0 && (
                   <div className="py-12 text-center text-zinc-500 dark:text-zinc-400">
-                    Nenhum item cadastrado.
+                    Nenhum item encontrado.
                   </div>
                 )}
               </div>
@@ -1306,7 +1858,203 @@ function ConfirmModal({ isOpen, onClose, onConfirm, title, message }: any) {
   );
 }
 
-function CategoryDetailManager({ categories = [], details = [], menu = [], sendWS }: any) {
+function ConfigModal({ isOpen, onClose, categories, details, sendWS, vibrate }: any) {
+  const [localCats, setLocalCats] = useState<any[]>([]);
+  const [localGroups, setLocalGroups] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (isOpen) {
+      setLocalCats(categories);
+      setLocalGroups(details);
+    }
+    // Only re-sync when the modal opens to avoid overwriting local changes during sync
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
+
+  const moveItem = (list: any[], index: number, direction: 'up' | 'down') => {
+    const newList = [...list];
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    if (targetIndex >= 0 && targetIndex < newList.length) {
+      [newList[index], newList[targetIndex]] = [newList[targetIndex], newList[index]];
+      return newList;
+    }
+    return list;
+  };
+
+  const handleSave = () => {
+    const catData = localCats.map((c, i) => ({ 
+      id: c.id, 
+      sort_order: i + 1,
+      print_enabled: c.print_enabled 
+    }));
+    const groupData = localGroups.map((g, i) => ({ 
+      id: g.id, 
+      sort_order: i + 1,
+      print_enabled: g.print_enabled,
+      show_in_history: g.show_in_history
+    }));
+    
+    sendWS('CATEGORY_SAVE_CONFIG', { categories: catData });
+    sendWS('DETAIL_SAVE_CONFIG', { groups: groupData });
+    onClose();
+  };
+
+  const toggleCategoryPrint = (catId: string) => {
+    const cat = localCats.find(c => c.id === catId);
+    if (!cat) return;
+    const newEnabled = cat.print_enabled === 0 ? 1 : 0;
+    
+    // Update category
+    setLocalCats(prev => prev.map(c => c.id === catId ? { ...c, print_enabled: newEnabled } : c));
+    
+    // Cascade to groups in local state
+    setLocalGroups(prev => prev.map(g => g.category_name === cat.name ? { ...g, print_enabled: newEnabled } : g));
+    
+    if (vibrate) vibrate(10);
+  };
+
+  const toggleGroupPrint = (groupId: string) => {
+    setLocalGroups(prev => prev.map(g => g.id === groupId ? { ...g, print_enabled: g.print_enabled === 0 ? 1 : 0 } : g));
+    if (vibrate) vibrate(10);
+  };
+
+  const toggleGroupHistory = (groupId: string) => {
+    setLocalGroups(prev => prev.map(g => g.id === groupId ? { ...g, show_in_history: g.show_in_history === 0 ? 1 : 0 } : g));
+    if (vibrate) vibrate(10);
+  };
+
+  const groupedGroups = useMemo(() => {
+    const groups: { [key: string]: any[] } = {};
+    localGroups.forEach((d: any) => {
+      const cat = d.category_name || 'Sem Categoria';
+      if (!groups[cat]) groups[cat] = [];
+      groups[cat].push(d);
+    });
+    return groups;
+  }, [localGroups]);
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Configurações de Ordem e Impressão">
+      <div className="space-y-8 max-h-[70vh] overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-zinc-200 dark:scrollbar-thumb-zinc-800">
+        <section className="space-y-4">
+          <div className="flex items-center justify-between px-1">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-400">Categorias</h3>
+            <span className="text-[10px] text-zinc-400 italic">Tocar na impressora para ativar/desativar</span>
+          </div>
+          <div className="space-y-2">
+            {localCats.map((c, index) => (
+              <div key={c.id} className="flex items-center justify-between p-3 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-100 dark:border-zinc-800">
+                <div className="flex items-center gap-3">
+                  <div className="flex flex-col gap-0.5">
+                    <button onClick={() => setLocalCats(moveItem(localCats, index, 'up'))} className="p-0.5 text-zinc-400 hover:text-emerald-500"><ArrowUp className="h-3 w-3" /></button>
+                    <button onClick={() => setLocalCats(moveItem(localCats, index, 'down'))} className="p-0.5 text-zinc-400 hover:text-emerald-500"><ArrowDown className="h-3 w-3" /></button>
+                  </div>
+                  <span className="font-medium dark:text-zinc-200">{c.name}</span>
+                </div>
+                <button
+                  onClick={() => toggleCategoryPrint(c.id)}
+                  className={cn(
+                    "p-2 rounded-lg transition-colors flex items-center gap-2",
+                    c.print_enabled !== 0 ? "bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400" : "bg-zinc-100 text-zinc-400 dark:bg-zinc-800"
+                  )}
+                >
+                  <Printer className="h-4 w-4" />
+                  <span className="text-[10px] font-bold">{c.print_enabled !== 0 ? 'ON' : 'OFF'}</span>
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="space-y-6">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-400 px-1">Grupos</h3>
+          {Object.entries(groupedGroups).map(([catName, items]: [string, any]) => (
+            <div key={catName} className="space-y-2">
+              <h4 className="text-[10px] font-bold uppercase text-zinc-500 px-1">{catName}</h4>
+              <div className="space-y-2">
+                {(items as any[]).map((g: any) => {
+                  const actualIndex = localGroups.findIndex(lg => lg.id === g.id);
+                  return (
+                    <div key={g.id} className="flex items-center justify-between p-3 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-100 dark:border-zinc-800">
+                      <div className="flex items-center gap-3">
+                        <div className="flex flex-col gap-0.5">
+                          <button 
+                            onClick={() => {
+                              const newList = [...localGroups];
+                              let prevIdx = -1;
+                              for (let i = actualIndex - 1; i >= 0; i--) {
+                                if (newList[i].category_name === g.category_name) { prevIdx = i; break; }
+                              }
+                              if (prevIdx !== -1) {
+                                [newList[actualIndex], newList[prevIdx]] = [newList[prevIdx], newList[actualIndex]];
+                                setLocalGroups(newList);
+                              }
+                            }}
+                            className="p-0.5 text-zinc-400 hover:text-emerald-500"
+                          >
+                            <ArrowUp className="h-3 w-3" />
+                          </button>
+                          <button 
+                            onClick={() => {
+                              const newList = [...localGroups];
+                              let nextIdx = -1;
+                              for (let i = actualIndex + 1; i < newList.length; i++) {
+                                if (newList[i].category_name === g.category_name) { nextIdx = i; break; }
+                              }
+                              if (nextIdx !== -1) {
+                                [newList[actualIndex], newList[nextIdx]] = [newList[nextIdx], newList[actualIndex]];
+                                setLocalGroups(newList);
+                              }
+                            }}
+                            className="p-0.5 text-zinc-400 hover:text-emerald-500"
+                          >
+                            <ArrowDown className="h-3 w-3" />
+                          </button>
+                        </div>
+                        <span className="font-medium dark:text-zinc-200">{g.name}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => toggleGroupHistory(g.id)}
+                          className={cn(
+                            "p-2 rounded-lg transition-colors flex items-center gap-2",
+                            g.show_in_history !== 0 ? "bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400" : "bg-zinc-100 text-zinc-400 dark:bg-zinc-800"
+                          )}
+                          title={g.show_in_history !== 0 ? "Visível no Histórico" : "Oculto no Histórico"}
+                        >
+                          <History className="h-4 w-4" />
+                          <span className="text-[10px] font-bold">{g.show_in_history !== 0 ? 'ON' : 'OFF'}</span>
+                        </button>
+                        <button
+                          onClick={() => toggleGroupPrint(g.id)}
+                          className={cn(
+                            "p-2 rounded-lg transition-colors flex items-center gap-2",
+                            g.print_enabled !== 0 ? "bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400" : "bg-zinc-100 text-zinc-400 dark:bg-zinc-800"
+                          )}
+                          title={g.print_enabled !== 0 ? "Impressão Ativa" : "Impressão Inativa"}
+                        >
+                          <Printer className="h-4 w-4" />
+                          <span className="text-[10px] font-bold">{g.print_enabled !== 0 ? 'ON' : 'OFF'}</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </section>
+
+        <div className="flex gap-3 pt-4 border-t border-zinc-100 dark:border-zinc-800 sticky bottom-0 bg-white dark:bg-zinc-900 pb-2">
+          <Button variant="outline" className="flex-1" onClick={onClose}>Fechar</Button>
+          <Button className="flex-1" onClick={handleSave}>Salvar Configurações</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function CategoryDetailManager({ categories = [], details = [], menu = [], sendWS, hasPermission, vibrate }: any) {
   const [newCat, setNewCat] = useState('');
   const [newDetail, setNewDetail] = useState('');
   const [newDetailCategory, setNewDetailCategory] = useState('');
@@ -1314,6 +2062,22 @@ function CategoryDetailManager({ categories = [], details = [], menu = [], sendW
   const [editingDetail, setEditingDetail] = useState<any>(null);
   const [editingDetailCategory, setEditingDetailCategory] = useState('');
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, title: '', message: '', onConfirm: () => {} });
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
+
+  const groupedDetails = useMemo(() => {
+    const groups: { [key: string]: any[] } = {};
+    details.forEach((d: any) => {
+      const cat = d.category_name || 'Sem Categoria';
+      if (!groups[cat]) groups[cat] = [];
+      groups[cat].push(d);
+    });
+    // Since details is already sorted by category sort_order then group sort_order,
+    // the keys in groups will be in the correct order.
+    return Object.keys(groups).map(key => ({
+      categoryName: key,
+      groupItems: groups[key]
+    }));
+  }, [details]);
 
   return (
     <div className="space-y-6">
@@ -1324,10 +2088,28 @@ function CategoryDetailManager({ categories = [], details = [], menu = [], sendW
         message={confirmModal.message} 
         onConfirm={confirmModal.onConfirm} 
       />
+      <ConfigModal
+        isOpen={isConfigModalOpen}
+        onClose={() => setIsConfigModalOpen(false)}
+        categories={categories}
+        details={details}
+        sendWS={sendWS}
+        vibrate={vibrate}
+      />
+      <div className="flex justify-end mb-2">
+        {hasPermission('manage_categories') && (
+          <Button onClick={() => setIsConfigModalOpen(true)} className="bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-800 dark:hover:bg-zinc-700">
+            <Settings className="mr-2 h-4 w-4" /> Configurar Ordem e Impressão
+          </Button>
+        )}
+      </div>
       <div className="grid gap-6 md:grid-cols-2">
         {/* Categories */}
         <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
-          <h4 className="text-md font-semibold mb-4 dark:text-zinc-100">Categorias</h4>
+          <div className="flex items-center justify-between mb-4">
+            <h4 className="text-md font-semibold dark:text-zinc-100">Categorias</h4>
+          </div>
+          
           <form onSubmit={(e) => {
             e.preventDefault();
             if (newCat.trim()) {
@@ -1338,9 +2120,9 @@ function CategoryDetailManager({ categories = [], details = [], menu = [], sendW
             <Input value={newCat} onChange={(e: any) => setNewCat(e.target.value)} placeholder="Nova categoria..." />
             <Button type="submit">Adicionar</Button>
           </form>
+
           <ul className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
-            {categories.map((c: any) => {
-              const catItems = menu.filter((m: any) => m.type === c.name);
+            {categories.map((c: any, index: number) => {
               return (
               <li key={c.id} className="flex flex-col gap-2 p-3 rounded-xl border border-zinc-100 bg-zinc-50 dark:bg-zinc-800/50 dark:border-zinc-800">
                 <div className="flex items-center justify-between">
@@ -1358,7 +2140,12 @@ function CategoryDetailManager({ categories = [], details = [], menu = [], sendW
                     </form>
                   ) : (
                     <>
-                      <span className="font-medium dark:text-zinc-200">{c.name}</span>
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-900/30 px-2 py-0.5 rounded-lg">
+                          {index + 1}°
+                        </span>
+                        <span className="font-medium dark:text-zinc-200">{c.name}</span>
+                      </div>
                       <div className="flex gap-1">
                         <button onClick={() => setEditingCat(c)} className="p-1 text-emerald-500 hover:text-emerald-700">
                           <Edit2 className="h-4 w-4" />
@@ -1382,7 +2169,10 @@ function CategoryDetailManager({ categories = [], details = [], menu = [], sendW
 
         {/* Grupos */}
         <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
-          <h4 className="text-md font-semibold mb-4 dark:text-zinc-100">Grupos</h4>
+          <div className="flex items-center justify-between mb-4">
+            <h4 className="text-md font-semibold dark:text-zinc-100">Grupos</h4>
+          </div>
+
           <form onSubmit={(e) => {
             e.preventDefault();
             if (newDetail.trim() && newDetailCategory) {
@@ -1408,127 +2198,333 @@ function CategoryDetailManager({ categories = [], details = [], menu = [], sendW
             </div>
             <Button type="submit" className="w-full">Adicionar</Button>
           </form>
-          <ul className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
-            {details.map((g: any) => {
-              const detailItems = menu.filter((m: any) => m.category === g.name);
-              return (
-              <li key={g.id} className="flex flex-col gap-2 p-3 rounded-xl border border-zinc-100 bg-zinc-50 dark:bg-zinc-800/50 dark:border-zinc-800">
-                <div className="flex items-center justify-between">
-                  {editingDetail?.id === g.id ? (
-                    <form onSubmit={(e) => {
-                      e.preventDefault();
-                      if (editingDetail.name.trim() && editingDetailCategory) {
-                        sendWS('DETAIL_EDIT', { id: g.id, name: editingDetail.name.trim(), category_name: editingDetailCategory });
-                        setEditingDetail(null);
-                        setEditingDetailCategory('');
-                      } else {
-                        toast.error("Preencha o nome e selecione uma categoria");
-                      }
-                    }} className="flex flex-col gap-2 w-full">
-                      <div className="flex gap-2">
-                        <Input autoFocus value={editingDetail.name} onChange={(e: any) => setEditingDetail({ ...editingDetail, name: e.target.value })} />
-                        <select
-                          value={editingDetailCategory}
-                          onChange={(e) => setEditingDetailCategory(e.target.value)}
-                          className="flex h-10 w-full items-center justify-between rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm ring-offset-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-zinc-950 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:ring-offset-zinc-950 dark:placeholder:text-zinc-400 dark:focus:ring-zinc-300"
-                        >
-                          <option value="">Selecione uma categoria...</option>
-                          {categories.map((c: any) => (
-                            <option key={c.id} value={c.name}>{c.name}</option>
-                          ))}
-                        </select>
+
+          <div className="space-y-6 max-h-[400px] overflow-y-auto pr-2">
+            {groupedDetails.map(({ categoryName, groupItems }: any) => (
+              <div key={categoryName} className="space-y-2">
+                <h5 className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 px-1">{categoryName}</h5>
+                <ul className="space-y-2">
+                  {groupItems.map((g: any, index: number) => {
+                    return (
+                    <li key={g.id} className="flex flex-col gap-2 p-3 rounded-xl border border-zinc-100 bg-zinc-50 dark:bg-zinc-800/50 dark:border-zinc-800">
+                      <div className="flex items-center justify-between">
+                        {editingDetail?.id === g.id ? (
+                          <form onSubmit={(e) => {
+                            e.preventDefault();
+                            if (editingDetail.name.trim() && editingDetailCategory) {
+                              sendWS('DETAIL_EDIT', { id: g.id, name: editingDetail.name.trim(), category_name: editingDetailCategory });
+                              setEditingDetail(null);
+                              setEditingDetailCategory('');
+                            } else {
+                              toast.error("Preencha o nome e selecione uma categoria");
+                            }
+                          }} className="flex flex-col gap-2 w-full">
+                            <div className="flex gap-2">
+                              <Input autoFocus value={editingDetail.name} onChange={(e: any) => setEditingDetail({ ...editingDetail, name: e.target.value })} />
+                              <select
+                                value={editingDetailCategory}
+                                onChange={(e) => setEditingDetailCategory(e.target.value)}
+                                className="flex h-10 w-full items-center justify-between rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm ring-offset-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-zinc-950 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:ring-offset-zinc-950 dark:placeholder:text-zinc-400 dark:focus:ring-zinc-300"
+                              >
+                                <option value="">Selecione uma categoria...</option>
+                                {categories.map((c: any) => (
+                                  <option key={c.id} value={c.name}>{c.name}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="flex gap-2 justify-end">
+                              <Button type="submit" className="px-2 py-1 h-auto text-xs">Salvar</Button>
+                              <Button type="button" variant="outline" className="px-2 py-1 h-auto text-xs" onClick={() => { setEditingDetail(null); setEditingDetailCategory(''); }}>Cancelar</Button>
+                            </div>
+                          </form>
+                        ) : (
+                          <>
+                            <div className="flex items-center gap-3">
+                              <span className="text-[10px] font-bold text-zinc-500 dark:text-zinc-400 bg-zinc-200 dark:bg-zinc-700 px-1.5 py-0.5 rounded">
+                                {index + 1}°
+                              </span>
+                              <span className="font-medium dark:text-zinc-200">{g.name}</span>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <button onClick={() => { setEditingDetail(g); setEditingDetailCategory(g.category_name || ''); }} className="p-1 text-emerald-500 hover:text-emerald-700">
+                                <Edit2 className="h-4 w-4" />
+                              </button>
+                              <button onClick={() => setConfirmModal({
+                                isOpen: true,
+                                title: 'Excluir Grupo',
+                                message: `Deseja excluir o grupo "${g.name}"?`,
+                                onConfirm: () => sendWS('DETAIL_DELETE', { id: g.id })
+                              })} className="p-1 text-rose-500 hover:text-rose-700">
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </>
+                        )}
                       </div>
-                      <div className="flex gap-2 justify-end">
-                        <Button type="submit" className="px-2 py-1 h-auto text-xs">Salvar</Button>
-                        <Button type="button" variant="outline" className="px-2 py-1 h-auto text-xs" onClick={() => { setEditingDetail(null); setEditingDetailCategory(''); }}>Cancelar</Button>
-                      </div>
-                    </form>
-                  ) : (
-                    <>
-                      <div className="flex flex-col">
-                        <span className="font-medium dark:text-zinc-200">{g.name}</span>
-                        <span className="text-xs text-zinc-500 dark:text-zinc-400">Categoria: {g.category_name || 'Nenhuma'}</span>
-                      </div>
-                      <div className="flex gap-1">
-                        <button onClick={() => { setEditingDetail(g); setEditingDetailCategory(g.category_name || ''); }} className="p-1 text-emerald-500 hover:text-emerald-700">
-                          <Edit2 className="h-4 w-4" />
-                        </button>
-                        <button onClick={() => setConfirmModal({
-                          isOpen: true,
-                          title: 'Excluir Grupo',
-                          message: `Deseja excluir o grupo "${g.name}"?`,
-                          onConfirm: () => sendWS('DETAIL_DELETE', { id: g.id })
-                        })} className="p-1 text-rose-500 hover:text-rose-700">
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              </li>
-            )})}
-          </ul>
+                    </li>
+                  )})}
+                </ul>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-function ERPTab({ menu, categories, details, sendWS, onAddMenu, onEditMenu, onResetHistory, currentUser }: any) {
+function PermissionsManager({ settings, sendWS, currentUser }: any) {
+  const roles = ['admin', 'waiter', 'kitchen', 'caixa'];
+  const [activeRole, setActiveRole] = useState(roles[0]);
+
+  const permissionGroups = [
+    {
+      title: 'Módulos (Acesso)',
+      permissions: [
+        { key: 'mesas', label: 'Mesas' },
+        { key: 'historico', label: 'Histórico' },
+        { key: 'cardapio', label: 'Cardápio' },
+        { key: 'gestao', label: 'Gestão' },
+        { key: 'config', label: 'Configurações' },
+      ]
+    },
+    {
+      title: 'Ações de Gestão',
+      permissions: [
+        { key: 'edit_menu', label: 'Gestão: Produtos e Cardápio' },
+        { key: 'manage_categories', label: 'Gestão: Categorias e Grupos' },
+        { key: 'reorder_categories', label: 'Gestão: Organizar Categorias' },
+        { key: 'reorder_groups', label: 'Gestão: Organizar Grupos' },
+        { key: 'manage_users', label: 'Gestão: Equipe' },
+        { key: 'manage_permissions', label: 'Gestão: Autorizações' },
+        { key: 'clear_history', label: 'Gestão: Ações de Limpeza' },
+        { key: 'native_view', label: 'Visualização App Nativo' },
+      ]
+    },
+    {
+      title: 'Operações de Pedido',
+      permissions: [
+        { key: 'delete_order', label: 'Excluir Pedidos' },
+        { key: 'transfer_table', label: 'Transferir Mesa' },
+        { key: 'mark_history_read', label: 'Marcar Visto no Histórico' },
+      ]
+    }
+  ];
+
+  const handleToggle = (role: string, permission: string) => {
+    const key = `permissions_${role}`;
+    const currentPerms = settings[key] ? (typeof settings[key] === 'string' ? JSON.parse(settings[key]) : settings[key]) : {};
+    const newPerms = { ...currentPerms, [permission]: !currentPerms[permission] };
+    
+    sendWS('SETTINGS_UPDATE', { [key]: JSON.stringify(newPerms) });
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Role Tabs */}
+      <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+        {roles.map(role => (
+          <button
+            key={role}
+            onClick={() => setActiveRole(role)}
+            className={cn(
+              "px-4 py-2 rounded-xl text-sm font-bold transition-all whitespace-nowrap",
+              activeRole === role 
+                ? "bg-emerald-500 text-white shadow-lg shadow-emerald-500/20" 
+                : "bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-50 dark:bg-zinc-900 dark:border-zinc-800 dark:text-zinc-400"
+            )}
+          >
+            {role === 'waiter' ? 'Garçom' : role === 'kitchen' ? 'Cozinha' : role.charAt(0).toUpperCase() + role.slice(1)}
+          </button>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {permissionGroups.map(group => {
+          const key = `permissions_${activeRole}`;
+          const perms = settings[key] ? (typeof settings[key] === 'string' ? JSON.parse(settings[key]) : settings[key]) : {};
+
+          return (
+            <div key={group.title} className="rounded-2xl border border-zinc-200 bg-white p-6 dark:bg-zinc-900 dark:border-zinc-800">
+              <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-4">{group.title}</h3>
+              <div className="space-y-3">
+                {group.permissions.map(perm => (
+                  <div key={perm.key} className="flex items-center justify-between p-3 rounded-xl bg-zinc-50 dark:bg-zinc-800/50">
+                    <span className="text-sm font-medium dark:text-zinc-300">{perm.label}</span>
+                    <button
+                      onClick={() => handleToggle(activeRole, perm.key)}
+                      className={cn(
+                        "relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none",
+                        perms[perm.key] ? 'bg-emerald-600' : 'bg-zinc-300 dark:bg-zinc-700'
+                      )}
+                    >
+                      <span className={cn(
+                        "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
+                        perms[perm.key] ? 'translate-x-6' : 'translate-x-1'
+                      )} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function GestaoTab({ 
+  menu, 
+  categories, 
+  details, 
+  sendWS, 
+  onAddMenu, 
+  onEditMenu, 
+  onResetHistory, 
+  currentUser, 
+  settings, 
+  hasPermission,
+  users = [],
+  onRefreshUsers,
+  onAddUser,
+  onEditUser,
+  transferRequests = [],
+  allOrders = [],
+  vibrate
+}: any) {
   const [activeSection, setActiveSection] = useState<string | null>(null);
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, title: '', message: '', onConfirm: () => {} });
 
+  const isHost = currentUser?.role === 'host';
+
+  const deleteUser = (id: string) => {
+    setConfirmModal({
+      isOpen: true,
+      title: 'Excluir Usuário',
+      message: 'Tem certeza que deseja excluir este usuário?',
+      onConfirm: async () => {
+        try {
+          const res = await fetch(`/api/users/${id}`, { 
+            method: 'DELETE',
+            headers: { 'x-app-user-id': currentUser.id }
+          });
+          const data = await res.json();
+          if (data.success) {
+            onRefreshUsers();
+            toast.success('Usuário removido');
+          } else {
+            toast.error(data.message || 'Erro ao remover usuário');
+          }
+        } catch (error) {
+          toast.error('Erro de conexão ao remover usuário');
+        }
+        setConfirmModal({ ...confirmModal, isOpen: false });
+      }
+    });
+  };
+
   const renderMenu = () => (
-    <div className="max-w-2xl mx-auto space-y-2">
-      <h2 className="text-2xl font-bold mb-6 dark:text-zinc-100">ERP - Gestão</h2>
+    <div className="max-w-2xl mx-auto space-y-6">
+      <h2 className="text-2xl font-bold mb-6 dark:text-zinc-100">Gestão do Sistema</h2>
       
-      <button 
-        onClick={() => setActiveSection('products')}
-        className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
-      >
-        <div className="flex items-center gap-4">
-          <div className="p-2 rounded-xl bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
-            <UtensilsCrossed className="h-6 w-6" />
-          </div>
-          <div className="text-left">
-            <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Produtos</h3>
-            <p className="text-sm text-zinc-500 dark:text-zinc-400">Gerenciar itens do cardápio</p>
-          </div>
-        </div>
-        <ChevronRight className="h-5 w-5 text-zinc-400" />
-      </button>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="space-y-4">
+          <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider px-2">Cardápio</h3>
+          {hasPermission('edit_menu') && (
+            <button 
+              onClick={() => setActiveSection('products')}
+              className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
+            >
+              <div className="flex items-center gap-4">
+                <div className="p-2 rounded-xl bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
+                  <UtensilsCrossed className="h-6 w-6" />
+                </div>
+                <div className="text-left">
+                  <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Produtos</h3>
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400">Gerenciar itens</p>
+                </div>
+              </div>
+              <ChevronRight className="h-5 w-5 text-zinc-400" />
+            </button>
+          )}
 
-      <button 
-        onClick={() => setActiveSection('categories')}
-        className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
-      >
-        <div className="flex items-center gap-4">
-          <div className="p-2 rounded-xl bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400">
-            <Tags className="h-6 w-6" />
-          </div>
-          <div className="text-left">
-            <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Categorias e Grupos</h3>
-            <p className="text-sm text-zinc-500 dark:text-zinc-400">Organizar cardápio e opções</p>
-          </div>
+          {hasPermission('manage_categories') && (
+            <button 
+              onClick={() => setActiveSection('categories')}
+              className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
+            >
+              <div className="flex items-center gap-4">
+                <div className="p-2 rounded-xl bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400">
+                  <Tags className="h-6 w-6" />
+                </div>
+                <div className="text-left">
+                  <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Categorias e Grupos</h3>
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400">Organizar cardápio</p>
+                </div>
+              </div>
+              <ChevronRight className="h-5 w-5 text-zinc-400" />
+            </button>
+          )}
         </div>
-        <ChevronRight className="h-5 w-5 text-zinc-400" />
-      </button>
 
-      <button 
-        onClick={() => setActiveSection('danger')}
-        className="w-full flex items-center justify-between p-4 rounded-2xl bg-rose-50 border border-rose-200 hover:bg-rose-100 transition-colors dark:bg-rose-900/10 dark:border-rose-900/30 dark:hover:bg-rose-900/20"
-      >
-        <div className="flex items-center gap-4">
-          <div className="p-2 rounded-xl bg-rose-100 text-rose-600 dark:bg-rose-900/50 dark:text-rose-400">
-            <AlertCircle className="h-6 w-6" />
-          </div>
-          <div className="text-left">
-            <h3 className="font-semibold text-rose-900 dark:text-rose-200">Ações de Limpeza</h3>
-            <p className="text-sm text-rose-700 dark:text-rose-400">Zerar histórico e dados</p>
-          </div>
+        <div className="space-y-4">
+          <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider px-2">Administrativo</h3>
+          {hasPermission('manage_users') && (
+            <button 
+              onClick={() => setActiveSection('users')}
+              className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
+            >
+              <div className="flex items-center gap-4">
+                <div className="p-2 rounded-xl bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-400">
+                  <Users className="h-6 w-6" />
+                </div>
+                <div className="text-left">
+                  <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Equipe</h3>
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400">Usuários e acessos</p>
+                </div>
+              </div>
+              <ChevronRight className="h-5 w-5 text-zinc-400" />
+            </button>
+          )}
+
+          {hasPermission('manage_permissions') && (
+            <button 
+              onClick={() => setActiveSection('permissions')}
+              className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
+            >
+              <div className="flex items-center gap-4">
+                <div className="p-2 rounded-xl bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400">
+                  <ShieldCheck className="h-6 w-6" />
+                </div>
+                <div className="text-left">
+                  <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Autorizações</h3>
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400">Permissões de cargos</p>
+                </div>
+              </div>
+              <ChevronRight className="h-5 w-5 text-zinc-400" />
+            </button>
+          )}
         </div>
-        <ChevronRight className="h-5 w-5 text-rose-400" />
-      </button>
+      </div>
+
+      {hasPermission('clear_history') && (
+        <button 
+          onClick={() => setActiveSection('danger')}
+          className="w-full flex items-center justify-between p-4 rounded-2xl bg-rose-50 border border-rose-200 hover:bg-rose-100 transition-colors dark:bg-rose-900/10 dark:border-rose-900/30 dark:hover:bg-rose-900/20"
+        >
+          <div className="flex items-center gap-4">
+            <div className="p-2 rounded-xl bg-rose-100 text-rose-600 dark:bg-rose-900/50 dark:text-rose-400">
+              <AlertCircle className="h-6 w-6" />
+            </div>
+            <div className="text-left">
+              <h3 className="font-semibold text-rose-900 dark:text-rose-200">Ações de Limpeza</h3>
+              <p className="text-sm text-rose-700 dark:text-rose-400">Zerar histórico e dados</p>
+            </div>
+          </div>
+          <ChevronRight className="h-5 w-5 text-rose-400" />
+        </button>
+      )}
     </div>
   );
 
@@ -1540,13 +2536,80 @@ function ERPTab({ menu, categories, details, sendWS, onAddMenu, onEditMenu, onRe
             <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
               <MenuTab 
                 menu={menu} 
-                categories={categories}
+                categories={categories} 
                 details={details}
                 canEdit={true} 
                 onAdd={onAddMenu} 
                 onEdit={onEditMenu} 
                 onWS={sendWS} 
+                vibrate={vibrate}
               />
+            </div>
+          </div>
+        );
+      case 'users':
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+              {isHost && (
+                <div className="mb-8 border-b border-zinc-100 pb-8 dark:border-zinc-800">
+                  <h4 className="text-sm font-medium mb-4 dark:text-zinc-300">Acesso Geral</h4>
+                  <form onSubmit={(e) => {
+                    e.preventDefault();
+                    const formData = new FormData(e.currentTarget);
+                    sendWS('SETTINGS_UPDATE', {
+                      access_token: formData.get('access_token')
+                    });
+                    toast.success('Configurações salvas!');
+                  }} className="grid gap-4 md:grid-cols-2 items-end">
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium dark:text-zinc-400">Token de Acesso (Outros Usuários)</label>
+                      <div className="relative">
+                        <Input name="access_token" defaultValue={settings.access_token || '123456'} />
+                        <Edit2 className="absolute right-3 top-2.5 h-4 w-4 text-zinc-400 pointer-events-none" />
+                      </div>
+                    </div>
+                    <Button type="submit">Salvar Token</Button>
+                  </form>
+                </div>
+              )}
+
+              <div className="flex items-center justify-between mb-4">
+                <h4 className="text-sm font-medium dark:text-zinc-300">Equipe</h4>
+                <Button onClick={onAddUser} variant="outline"><UserPlus className="mr-2 h-4 w-4" /> Novo Usuário</Button>
+              </div>
+              <div className="rounded-xl border border-zinc-200 bg-white dark:bg-zinc-900 dark:border-zinc-800 divide-y divide-zinc-100 dark:divide-zinc-800">
+                {users.map((u: any) => (
+                  <div key={u.id} className="flex items-center justify-between p-4 sm:px-6 hover:bg-zinc-50/50 dark:hover:bg-zinc-800/50 transition-colors">
+                    <div>
+                      <p className="font-medium dark:text-zinc-200">{u.username}</p>
+                      <p className="text-xs sm:text-sm text-zinc-500 capitalize dark:text-zinc-400">
+                        {u.role === 'waiter' ? 'Garçom' : u.role === 'kitchen' ? 'Cozinha' : u.role}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1 sm:gap-2">
+                      {(u.role !== 'host' || isHost) && (
+                        <button 
+                          onClick={() => onEditUser(u)} 
+                          className="p-2 text-zinc-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 rounded-lg transition-colors"
+                          title="Editar"
+                        >
+                          <Edit2 className="h-4 w-4 sm:h-5 sm:w-5" />
+                        </button>
+                      )}
+                      {(u.username !== 'deckserrinha' && (u.role !== 'host' || isHost)) && (
+                        <button 
+                          onClick={() => deleteUser(u.id)} 
+                          className="p-2 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/30 rounded-lg transition-colors"
+                          title="Excluir"
+                        >
+                          <Trash2 className="h-4 w-4 sm:h-5 sm:w-5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         );
@@ -1554,8 +2617,14 @@ function ERPTab({ menu, categories, details, sendWS, onAddMenu, onEditMenu, onRe
         return (
           <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
             <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
-              <CategoryDetailManager categories={categories} details={details} sendWS={sendWS} menu={menu} />
+              <CategoryDetailManager categories={categories} details={details} sendWS={sendWS} menu={menu} hasPermission={hasPermission} vibrate={vibrate} />
             </div>
+          </div>
+        );
+      case 'permissions':
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <PermissionsManager settings={settings} sendWS={sendWS} currentUser={currentUser} />
           </div>
         );
       case 'danger':
@@ -1579,7 +2648,7 @@ function ERPTab({ menu, categories, details, sendWS, onAddMenu, onEditMenu, onRe
                       try {
                           const res = await fetch('/api/admin/reset-history', { 
                               method: 'POST',
-                              headers: { 'x-user-id': currentUser.id }
+                              headers: { 'x-app-user-id': currentUser.id }
                           });
                           const data = await res.json();
                           if (data.success) {
@@ -1610,6 +2679,8 @@ function ERPTab({ menu, categories, details, sendWS, onAddMenu, onEditMenu, onRe
     switch (activeSection) {
       case 'products': return 'Produtos';
       case 'categories': return 'Categorias e Grupos';
+      case 'users': return 'Equipe e Acessos';
+      case 'permissions': return 'Autorizações de Cargos';
       case 'danger': return 'Ações de Limpeza';
       default: return '';
     }
@@ -1655,7 +2726,34 @@ function ERPTab({ menu, categories, details, sendWS, onAddMenu, onEditMenu, onRe
   );
 }
 
-function ConfigTab({ users, settings, darkMode, setDarkMode, notificationsEnabled, setNotificationsEnabled, soundEnabled, setSoundEnabled, onRefreshUsers, onAddUser, onEditUser, currentUser, onUpdateCurrentUser, onSaveSettings, onResetHistory, categories = [], details = [], sendWS, menu = [] }: any) {
+function ConfigTab({ 
+  users, 
+  settings, 
+  darkMode, 
+  setDarkMode, 
+  displayScale,
+  setDisplayScale,
+  fontSize,
+  setFontSize,
+  vibrationEnabled,
+  setVibrationEnabled,
+  notificationsEnabled, 
+  setNotificationsEnabled, 
+  soundEnabled, 
+  setSoundEnabled, 
+  onRefreshUsers, 
+  onAddUser, 
+  onEditUser, 
+  currentUser, 
+  onUpdateCurrentUser, 
+  onSaveSettings, 
+  onResetHistory, 
+  categories = [], 
+  details = [], 
+  sendWS, 
+  menu = [],
+  hasPermission
+}: any) {
   const [isEditingHost, setIsEditingHost] = useState(false);
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, title: '', message: '', onConfirm: () => {} });
   const [activeSection, setActiveSection] = useState<string | null>(null);
@@ -1672,7 +2770,7 @@ function ConfigTab({ users, settings, darkMode, setDarkMode, notificationsEnable
         try {
           const res = await fetch(`/api/users/${id}`, { 
             method: 'DELETE',
-            headers: { 'x-user-id': currentUser.id }
+            headers: { 'x-app-user-id': currentUser.id }
           });
           const data = await res.json();
           if (data.success) {
@@ -1724,46 +2822,123 @@ function ConfigTab({ users, settings, darkMode, setDarkMode, notificationsEnable
         <ChevronRight className="h-5 w-5 text-zinc-400" />
       </button>
 
-      {(isHost || isAdmin) && (
-        <>
-          <button 
-            onClick={() => setActiveSection('users')}
-            className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
-          >
-            <div className="flex items-center gap-4">
-              <div className="p-2 rounded-xl bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400">
-                <Users className="h-6 w-6" />
-              </div>
-              <div className="text-left">
-                <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Usuários</h3>
-                <p className="text-sm text-zinc-500 dark:text-zinc-400">Gerenciar equipe e permissões</p>
-              </div>
+      {isHost && (
+        <button 
+          onClick={() => setActiveSection('native')}
+          className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
+        >
+          <div className="flex items-center gap-4">
+            <div className="p-2 rounded-xl bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400">
+              <Download className="h-6 w-6" />
             </div>
-            <ChevronRight className="h-5 w-5 text-zinc-400" />
-          </button>
-
-          <button 
-            onClick={() => setActiveSection('native')}
-            className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
-          >
-            <div className="flex items-center gap-4">
-              <div className="p-2 rounded-xl bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400">
-                <Download className="h-6 w-6" />
-              </div>
-              <div className="text-left">
-                <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">App Nativo</h3>
-                <p className="text-sm text-zinc-500 dark:text-zinc-400">Preparação para Android e iOS</p>
-              </div>
+            <div className="text-left">
+              <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">App Nativo</h3>
+              <p className="text-sm text-zinc-500 dark:text-zinc-400">Preparação para Android e iOS</p>
             </div>
-            <ChevronRight className="h-5 w-5 text-zinc-400" />
-          </button>
-        </>
+          </div>
+          <ChevronRight className="h-5 w-5 text-zinc-400" />
+        </button>
       )}
+
+      <button 
+        onClick={() => setActiveSection('whatsnew')}
+        className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
+      >
+        <div className="flex items-center gap-4">
+          <div className="p-2 rounded-xl bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400">
+            <Sparkles className="h-6 w-6" />
+          </div>
+          <div className="text-left">
+            <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Novidades</h3>
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">O que mudou na versão 1.1.4</p>
+          </div>
+        </div>
+        <ChevronRight className="h-5 w-5 text-zinc-400" />
+      </button>
     </div>
   );
 
   const renderSectionContent = () => {
     switch (activeSection) {
+      case 'whatsnew':
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+              <h3 className="text-lg font-bold mb-4 dark:text-zinc-100">Novidades da Versão 1.1.4 beta</h3>
+              <div className="space-y-6">
+                <div className="flex gap-4">
+                  <div className="h-10 w-10 shrink-0 rounded-xl bg-emerald-100 text-emerald-600 flex items-center justify-center dark:bg-emerald-900/30 dark:text-emerald-400">
+                    <MoveRight className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <h4 className="font-bold dark:text-zinc-200">Transferência de Mesas</h4>
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400">Agora você pode transferir itens entre mesas. Usuários autorizados podem realizar a transferência diretamente, enquanto outros podem solicitar a aprovação de um administrador.</p>
+                  </div>
+                </div>
+
+                <div className="flex gap-4">
+                  <div className="h-10 w-10 shrink-0 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center dark:bg-blue-900/30 dark:text-blue-400">
+                    <Trees className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <h4 className="font-bold dark:text-zinc-200">Tipos de Mesa (Salão vs Gramado)</h4>
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400">As mesas agora podem ser identificadas como Salão ou Gramado ao serem abertas, com cores e etiquetas exclusivas para facilitar a organização visual.</p>
+                  </div>
+                </div>
+
+                <div className="flex gap-4">
+                  <div className="h-10 w-10 shrink-0 rounded-xl bg-purple-100 text-purple-600 flex items-center justify-center dark:bg-purple-900/30 dark:text-purple-400">
+                    <Database className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <h4 className="font-bold dark:text-zinc-200">Aba Gestão Reorganizada</h4>
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400">A aba de "Gestão" foi movida para o final da navegação para facilitar o acesso. As seções foram agrupadas de forma mais intuitiva: Cardápio (Produtos, Categorias) e Administrativo (Equipe, Autorizações).</p>
+                  </div>
+                </div>
+
+                <div className="flex gap-4">
+                  <div className="h-10 w-10 shrink-0 rounded-xl bg-amber-100 text-amber-600 flex items-center justify-center dark:bg-amber-900/30 dark:text-amber-400">
+                    <RefreshCw className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <h4 className="font-bold dark:text-zinc-200">Acesso Rápido à Sincronização</h4>
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400">O botão de sincronização agora está no cabeçalho para acesso imediato. O status da nuvem foi movido para a barra lateral.</p>
+                  </div>
+                </div>
+
+                <div className="flex gap-4">
+                  <div className="h-10 w-10 shrink-0 rounded-xl bg-purple-100 text-purple-600 flex items-center justify-center dark:bg-purple-900/30 dark:text-purple-400">
+                    <Hash className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <h4 className="font-bold dark:text-zinc-200">Formatação de Mesas</h4>
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400">A numeração das mesas agora segue o padrão de dois dígitos (01, 02, 03...), melhorando a ordenação e visualização nos filtros.</p>
+                  </div>
+                </div>
+
+                <div className="flex gap-4">
+                  <div className="h-10 w-10 shrink-0 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center dark:bg-rose-900/30 dark:text-rose-400">
+                    <ShieldCheck className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <h4 className="font-bold dark:text-zinc-200">Correções de Login e Estabilidade</h4>
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400">Corrigido o problema de login que impedia o acesso de alguns usuários. A sincronização de senhas entre dispositivos e nuvem foi aprimorada para garantir persistência.</p>
+                  </div>
+                </div>
+
+                <div className="flex gap-4">
+                  <div className="h-10 w-10 shrink-0 rounded-xl bg-indigo-100 text-indigo-600 flex items-center justify-center dark:bg-indigo-900/30 dark:text-indigo-400">
+                    <History className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <h4 className="font-bold dark:text-zinc-200">Histórico Inteligente</h4>
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400">O histórico agora permite aprovar ou recusar solicitações de transferência diretamente. A coluna de mesas foi removida para uma visualização mais limpa, com as informações integradas aos detalhes.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
       case 'native':
         return (
           <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
@@ -1805,11 +2980,66 @@ function ConfigTab({ users, settings, darkMode, setDarkMode, notificationsEnable
           </div>
         );
       case 'account':
+        if (!currentUser) return null;
+        const avatars = ['👤', '👨‍🍳', '👩‍🍳', '🍕', '🍔', '🍣', '🍝', '🥩', '🥗', '🍰', '☕', '🍺', '🍹', '🍷'];
         return (
           <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
             <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+              <h3 className="text-sm font-medium mb-4 dark:text-zinc-300">Foto de Perfil</h3>
+              <div className="flex flex-wrap gap-3 mb-6">
+                {avatars.map(emoji => (
+                  <button
+                    key={emoji}
+                    onClick={async () => {
+                      if (!currentUser || !currentUser.id) {
+                        toast.error('ID do usuário não encontrado. Tente sair e entrar novamente.');
+                        console.error("Current user missing ID:", currentUser);
+                        return;
+                      }
+                      try {
+                        const res = await fetch(`/api/users/${currentUser.id}`, {
+                          method: 'PUT',
+                          headers: { 'Content-Type': 'application/json', 'x-app-user-id': currentUser.id },
+                          body: JSON.stringify({ avatar: emoji, role: currentUser.role })
+                        });
+                        if (res.ok) {
+                          onUpdateCurrentUser({ ...currentUser, avatar: emoji });
+                          toast.success('Avatar atualizado!');
+                        } else {
+                          const contentType = res.headers.get("content-type");
+                          if (contentType && contentType.indexOf("application/json") !== -1) {
+                            const data = await res.json();
+                            toast.error(data.message || 'Erro ao atualizar avatar');
+                          } else {
+                            const text = await res.text();
+                            console.error("Avatar update error (non-JSON):", text);
+                            toast.error(`Erro no servidor (${res.status}) ao atualizar avatar. Verifique o console.`);
+                          }
+                        }
+                      } catch (e) {
+                        console.error("Avatar update error:", e);
+                        toast.error('Erro de conexão ao atualizar avatar');
+                      }
+                    }}
+                    className={cn(
+                      "h-12 w-12 flex items-center justify-center text-2xl rounded-xl border-2 transition-all",
+                      currentUser.avatar === emoji 
+                        ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20" 
+                        : "border-zinc-100 hover:border-zinc-300 dark:border-zinc-800 dark:hover:border-zinc-700"
+                    )}
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </div>
+
               <form onSubmit={async (e) => {
                 e.preventDefault();
+                if (!currentUser || !currentUser.id) {
+                  toast.error('ID do usuário não encontrado. Tente sair e entrar novamente.');
+                  console.error("Current user missing ID:", currentUser);
+                  return;
+                }
                 const formData = new FormData(e.currentTarget);
                 const username = formData.get('username') as string;
                 const password = formData.get('password') as string;
@@ -1817,18 +3047,27 @@ function ConfigTab({ users, settings, darkMode, setDarkMode, notificationsEnable
                 try {
                   const res = await fetch(`/api/users/${currentUser.id}`, {
                     method: 'PUT',
-                    headers: { 'Content-Type': 'application/json', 'x-user-id': currentUser.id },
+                    headers: { 'Content-Type': 'application/json', 'x-app-user-id': currentUser.id },
                     body: JSON.stringify({ username, password: password || undefined, role: currentUser.role })
                   });
-                  const data = await res.json();
-                  if (data.success) {
-                    toast.success('Dados atualizados com sucesso!');
-                    onRefreshUsers();
-                    onUpdateCurrentUser({ ...currentUser, username });
+                  
+                  const contentType = res.headers.get("content-type");
+                  if (contentType && contentType.indexOf("application/json") !== -1) {
+                    const data = await res.json();
+                    if (data.success) {
+                      toast.success('Dados atualizados com sucesso!');
+                      onRefreshUsers();
+                      onUpdateCurrentUser({ ...currentUser, username });
+                    } else {
+                      toast.error(data.message || 'Erro ao atualizar dados');
+                    }
                   } else {
-                    toast.error(data.message || 'Erro ao atualizar dados');
+                    const text = await res.text();
+                    console.error("Account update error (non-JSON):", text);
+                    toast.error(`Erro no servidor (${res.status}) ao atualizar dados. Verifique o console.`);
                   }
                 } catch (error) {
+                  console.error("Account update error:", error);
                   toast.error('Erro de conexão');
                 }
               }} className="grid gap-4 md:grid-cols-2 items-end">
@@ -1921,6 +3160,66 @@ function ConfigTab({ users, settings, darkMode, setDarkMode, notificationsEnable
                     )} />
                   </button>
                 </div>
+
+                <div className="border-t border-zinc-100 pt-6 dark:border-zinc-800">
+                  <h4 className="text-sm font-bold uppercase text-zinc-400 mb-4">Visualização</h4>
+                  <div className="space-y-6">
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <label className="font-medium dark:text-zinc-200">Tamanho da Visualização</label>
+                        <span className="text-zinc-500">{displayScale}%</span>
+                      </div>
+                      <input 
+                        type="range" 
+                        min="100" 
+                        max="150" 
+                        step="5"
+                        value={displayScale} 
+                        onChange={(e) => setDisplayScale(parseInt(e.target.value))}
+                        className="w-full h-2 bg-zinc-200 rounded-lg appearance-none cursor-pointer accent-emerald-600 dark:bg-zinc-800"
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <label className="font-medium dark:text-zinc-200">Tamanho da Fonte</label>
+                        <span className="text-zinc-500">{fontSize}px</span>
+                      </div>
+                      <input 
+                        type="range" 
+                        min="12" 
+                        max="24" 
+                        value={fontSize} 
+                        onChange={(e) => setFontSize(e.target.value)}
+                        className="w-full h-2 bg-zinc-200 rounded-lg appearance-none cursor-pointer accent-emerald-600 dark:bg-zinc-800"
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className={cn("p-2 rounded-lg", vibrationEnabled ? "bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400" : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400")}>
+                          <RefreshCw className="h-5 w-5" />
+                        </div>
+                        <div>
+                          <p className="font-medium dark:text-zinc-200">Vibração ao Toque</p>
+                          <p className="text-xs text-zinc-500">Vibrar o dispositivo em interações</p>
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => setVibrationEnabled(!vibrationEnabled)}
+                        className={cn(
+                          "relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2",
+                          vibrationEnabled ? 'bg-emerald-600' : 'bg-zinc-200'
+                        )}
+                      >
+                        <span className={cn(
+                          "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
+                          vibrationEnabled ? 'translate-x-6' : 'translate-x-1'
+                        )} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -1929,66 +3228,7 @@ function ConfigTab({ users, settings, darkMode, setDarkMode, notificationsEnable
         return (
           <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
             <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
-              {isHost && (
-                <div className="mb-8 border-b border-zinc-100 pb-8 dark:border-zinc-800">
-                  <h4 className="text-sm font-medium mb-4 dark:text-zinc-300">Acesso Geral</h4>
-                  <form onSubmit={(e) => {
-                    e.preventDefault();
-                    const formData = new FormData(e.currentTarget);
-                    onSaveSettings({
-                      service_fee: '10', // Fixed at 10%
-                      access_token: formData.get('access_token')
-                    });
-                    toast.success('Configurações salvas!');
-                  }} className="grid gap-4 md:grid-cols-2 items-end">
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium dark:text-zinc-400">Token de Acesso (Outros Usuários)</label>
-                      <div className="relative">
-                        <Input name="access_token" defaultValue={settings.access_token || '123456'} />
-                        <Edit2 className="absolute right-3 top-2.5 h-4 w-4 text-zinc-400 pointer-events-none" />
-                      </div>
-                    </div>
-                    <Button type="submit">Salvar Token</Button>
-                  </form>
-                </div>
-              )}
-
-              <div className="flex items-center justify-between mb-4">
-                <h4 className="text-sm font-medium dark:text-zinc-300">Equipe</h4>
-                <Button onClick={onAddUser} variant="outline"><UserPlus className="mr-2 h-4 w-4" /> Novo Usuário</Button>
-              </div>
-              <div className="rounded-xl border border-zinc-200 bg-white dark:bg-zinc-900 dark:border-zinc-800 divide-y divide-zinc-100 dark:divide-zinc-800">
-                {users.map((u: any) => (
-                  <div key={u.id} className="flex items-center justify-between p-4 sm:px-6 hover:bg-zinc-50/50 dark:hover:bg-zinc-800/50 transition-colors">
-                    <div>
-                      <p className="font-medium dark:text-zinc-200">{u.username}</p>
-                      <p className="text-xs sm:text-sm text-zinc-500 capitalize dark:text-zinc-400">
-                        {u.role === 'waiter' ? 'Garçom' : u.role === 'kitchen' ? 'Cozinha' : u.role}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-1 sm:gap-2">
-                      {(u.role !== 'host' || isHost) && (
-                        <button 
-                          onClick={() => onEditUser(u)} 
-                          className="p-2 text-zinc-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 rounded-lg transition-colors"
-                          title="Editar"
-                        >
-                          <Edit2 className="h-4 w-4 sm:h-5 sm:w-5" />
-                        </button>
-                      )}
-                      {(u.username !== 'deckserrinha' && (u.role !== 'host' || isHost)) && (
-                        <button 
-                          onClick={() => deleteUser(u.id)} 
-                          className="p-2 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/30 rounded-lg transition-colors"
-                          title="Excluir"
-                        >
-                          <Trash2 className="h-4 w-4 sm:h-5 sm:w-5" />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <p className="p-4 text-center text-sm text-zinc-500">Gerenciamento de usuários movido para Gestão.</p>
             </div>
           </div>
         );
@@ -2001,7 +3241,6 @@ function ConfigTab({ users, settings, darkMode, setDarkMode, notificationsEnable
     switch (activeSection) {
       case 'account': return 'Minha Conta';
       case 'general': return 'Geral';
-      case 'users': return 'Usuários';
       default: return '';
     }
   };
@@ -2036,7 +3275,7 @@ function ConfigTab({ users, settings, darkMode, setDarkMode, notificationsEnable
   );
 }
 
-function HistoryTab({ events, isHost, onMarkRead }: { events: any[]; isHost: boolean; onMarkRead: (id: string) => void }) {
+function HistoryTab({ events, canMarkRead, onMarkRead, transferRequests = [], onApproveTransfer, onRejectTransfer, hasTransferPermission }: { events: any[]; canMarkRead: boolean; onMarkRead: (id: string) => void; transferRequests?: any[]; onApproveTransfer?: (id: string) => void; onRejectTransfer?: (id: string) => void; hasTransferPermission?: boolean }) {
   const [userFilter, setUserFilter] = useState('');
   const [actionFilter, setActionFilter] = useState('');
   const [tableFilter, setTableFilter] = useState('');
@@ -2044,7 +3283,7 @@ function HistoryTab({ events, isHost, onMarkRead }: { events: any[]; isHost: boo
   const filteredEvents = events.filter(event => {
     const matchesUser = userFilter === '' || event.username.toLowerCase().includes(userFilter.toLowerCase());
     const matchesAction = actionFilter === '' || event.action.includes(actionFilter);
-    const matchesTable = tableFilter === '' || event.details.toLowerCase().includes(`mesa ${tableFilter}`);
+    const matchesTable = tableFilter === '' || (event.table_id && event.table_id.toString() === tableFilter) || event.details.toLowerCase().includes(`mesa ${formatTableNumber(tableFilter)}`);
     return matchesUser && matchesAction && matchesTable;
   });
 
@@ -2082,7 +3321,7 @@ function HistoryTab({ events, isHost, onMarkRead }: { events: any[]; isHost: boo
         <table className="w-full text-left text-sm min-w-full sm:min-w-[600px]">
           <thead className="bg-zinc-50 text-zinc-500 uppercase text-[10px] sm:text-xs font-bold tracking-wider dark:bg-zinc-800 dark:text-zinc-400">
             <tr>
-              {isHost && <th className="px-3 py-3 sm:px-6 sm:py-3 w-10 sm:w-16">Visto</th>}
+              {canMarkRead && <th className="px-3 py-3 sm:px-6 sm:py-3 w-10 sm:w-16">Visto</th>}
               <th className="px-3 py-3 sm:px-6 sm:py-3">Detalhes</th>
               <th className="px-3 py-3 sm:px-6 sm:py-3">Ação</th>
               <th className="px-3 py-3 sm:px-6 sm:py-3">Usuário</th>
@@ -2092,42 +3331,89 @@ function HistoryTab({ events, isHost, onMarkRead }: { events: any[]; isHost: boo
           <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
             {filteredEvents.length === 0 ? (
               <tr>
-                <td colSpan={isHost ? 5 : 4} className="px-3 py-4 sm:px-6 sm:py-8 text-center text-zinc-400">Nenhuma movimentação encontrada</td>
+                <td colSpan={canMarkRead ? 5 : 4} className="px-3 py-4 sm:px-6 sm:py-8 text-center text-zinc-400">Nenhuma movimentação encontrada</td>
               </tr>
             ) : (
-              filteredEvents.map(event => (
-                <tr key={event.id} className={cn("hover:bg-zinc-50/50 dark:hover:bg-zinc-800/50", event.is_read === 1 && "opacity-50")}>
-                  {isHost && (
-                    <td className="px-3 py-3 sm:px-6 sm:py-4">
-                      <input 
-                        type="checkbox" 
-                        checked={event.is_read === 1} 
-                        onChange={() => onMarkRead(event.id)}
-                        className="h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500"
-                      />
+              filteredEvents.map(event => {
+                const isPendingTransfer = (event.action === 'SOLICITAR_TRANSFERENCIA' || event.action === 'TABLE_TRANSFER_REQUEST') && 
+                                        event.request_id && 
+                                        transferRequests.find((r: any) => r.id === event.request_id && r.status === 'pending');
+
+                return (
+                  <tr key={event.id} className={cn("hover:bg-zinc-50/50 dark:hover:bg-zinc-800/50", event.is_read === 1 && "opacity-50")}>
+                    {canMarkRead && (
+                      <td className="px-3 py-3 sm:px-6 sm:py-4">
+                        <input 
+                          type="checkbox" 
+                          checked={event.is_read === 1} 
+                          onChange={() => onMarkRead(event.id)}
+                          className="h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500"
+                        />
+                      </td>
+                    )}
+                    <td className="px-3 py-3 sm:px-6 sm:py-4 text-zinc-900 dark:text-zinc-100 sm:whitespace-normal">
+                      <div className="flex flex-col gap-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          {event.table_id && (
+                            <span className="text-zinc-900 dark:text-zinc-100 text-[10px] font-black tracking-wider">
+                              MESA {formatTableNumber(event.table_id)} —
+                            </span>
+                          )}
+                          <span className="font-medium">
+                            {(() => {
+                              // Try to highlight quantity (e.g., "1x ")
+                              const match = event.details.match(/^(\d+x) (.*)$/);
+                              if (match) {
+                                return (
+                                  <>
+                                    <span className="text-zinc-900 dark:text-zinc-100 font-bold">{match[1]}</span> - {match[2].replace('(', '-(')}
+                                  </>
+                                );
+                              }
+                              
+                              return event.details;
+                            })()}
+                          </span>
+                        </div>
+                        {isPendingTransfer && hasTransferPermission && (
+                          <div className="flex gap-2 mt-2">
+                            <button
+                              onClick={() => onApproveTransfer?.(event.request_id!)}
+                              className="px-3 py-1 bg-emerald-600 text-white text-[10px] font-bold rounded-lg hover:bg-emerald-700 transition-colors"
+                            >
+                              Aprovar
+                            </button>
+                            <button
+                              onClick={() => onRejectTransfer?.(event.request_id!)}
+                              className="px-3 py-1 bg-zinc-200 text-zinc-600 text-[10px] font-bold rounded-lg hover:bg-zinc-300 transition-colors dark:bg-zinc-700 dark:text-zinc-300"
+                            >
+                              Recusar
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </td>
-                  )}
-                  <td className="px-3 py-3 sm:px-6 sm:py-4 text-zinc-600 dark:text-zinc-400 max-w-[150px] sm:max-w-none truncate sm:whitespace-normal">{event.details}</td>
-                  <td className="px-3 py-3 sm:px-6 sm:py-4">
-                    <span className={cn(
-                      "rounded-full px-2 py-0.5 text-[10px] sm:text-xs font-bold uppercase whitespace-nowrap",
-                      event.action === 'EXCLUIR_PEDIDO' ? "bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300" :
-                      event.action === 'PEDIR_CONTA' ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300" :
-                      event.action === 'FECHAR_MESA' ? "bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300" :
-                      event.action === 'ABRIR_MESA' ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300" :
-                      event.action === 'NOVO_PEDIDO' ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300" :
-                      "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
-                    )}>
-                      {event.action.replace('_', ' ')}
-                    </span>
-                  </td>
-                  <td className="px-3 py-3 sm:px-6 sm:py-4">
-                    <div className="font-medium dark:text-zinc-200 truncate max-w-[100px] sm:max-w-none">{event.username}</div>
-                    <div className="text-xs sm:hidden text-zinc-400 dark:text-zinc-500 mt-0.5">{format(new Date(event.timestamp), 'HH:mm:ss')}</div>
-                  </td>
-                  <td className="hidden sm:table-cell px-3 py-3 sm:px-6 sm:py-4 text-zinc-400 dark:text-zinc-500">{format(new Date(event.timestamp), 'HH:mm:ss')}</td>
-                </tr>
-              ))
+                    <td className="px-3 py-3 sm:px-6 sm:py-4">
+                      <span className={cn(
+                        "rounded-full px-2.5 py-1 text-[10px] sm:text-[11px] font-black uppercase whitespace-nowrap shadow-sm border",
+                        event.action === 'EXCLUIR_PEDIDO' ? "bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-900/30 dark:text-rose-300 dark:border-rose-800" :
+                        event.action === 'PEDIR_CONTA' ? "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-800" :
+                        event.action === 'FECHAR_MESA' ? "bg-teal-50 text-teal-700 border-teal-200 dark:bg-teal-900/30 dark:text-teal-300 dark:border-teal-800" :
+                        event.action === 'ABRIR_MESA' ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:border-emerald-800" :
+                        event.action === 'NOVO_PEDIDO' ? "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-800" :
+                        "bg-zinc-50 text-zinc-700 border-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:border-zinc-700"
+                      )}>
+                        {event.action.replace('_', ' ')}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3 sm:px-6 sm:py-4">
+                      <div className="font-medium dark:text-zinc-200 truncate max-w-[100px] sm:max-w-none">{event.username}</div>
+                      <div className="text-xs sm:hidden text-zinc-400 dark:text-zinc-500 mt-0.5">{format(new Date(event.timestamp), 'HH:mm:ss')}</div>
+                    </td>
+                    <td className="hidden sm:table-cell px-3 py-3 sm:px-6 sm:py-4 text-zinc-400 dark:text-zinc-500">{format(new Date(event.timestamp), 'HH:mm:ss')}</td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
@@ -2146,7 +3432,7 @@ function AddUserModal({ isOpen, onClose, onSuccess, currentUser }: any) {
           method: 'POST',
           headers: { 
             'Content-Type': 'application/json',
-            'x-user-id': currentUser?.id
+            'x-app-user-id': currentUser?.id
           },
           body: JSON.stringify(Object.fromEntries(formData))
         });
@@ -2172,6 +3458,7 @@ function AddUserModal({ isOpen, onClose, onSuccess, currentUser }: any) {
           <select name="role" className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100">
             <option value="waiter">Garçom</option>
             <option value="kitchen">Cozinha</option>
+            <option value="caixa">Caixa</option>
             <option value="admin">Admin</option>
             {currentUser?.role === 'host' && <option value="host">Host</option>}
           </select>
@@ -2197,7 +3484,7 @@ function EditUserModal({ isOpen, onClose, user, onSuccess, currentUser }: any) {
           method: 'PUT',
           headers: { 
             'Content-Type': 'application/json',
-            'x-user-id': currentUser?.id
+            'x-app-user-id': currentUser?.id
           },
           body: JSON.stringify(data)
         });
@@ -2228,6 +3515,7 @@ function EditUserModal({ isOpen, onClose, user, onSuccess, currentUser }: any) {
           >
             <option value="waiter">Garçom</option>
             <option value="kitchen">Cozinha</option>
+            <option value="caixa">Caixa</option>
             <option value="admin">Admin</option>
             {(currentUser?.role === 'host' || user.role === 'host') && <option value="host">Host</option>}
           </select>
@@ -2243,10 +3531,12 @@ function EditUserModal({ isOpen, onClose, user, onSuccess, currentUser }: any) {
 
 function EditMenuModal({ isOpen, onClose, onSave, item, categories = [], details = [] }: any) {
   const [selectedCategory, setSelectedCategory] = useState(item?.type || '');
+  const [selectedGroup, setSelectedGroup] = useState(item?.category || '');
 
   useEffect(() => {
     if (item) {
       setSelectedCategory(item.type || '');
+      setSelectedGroup(item.category || '');
     }
   }, [item]);
 
@@ -2256,7 +3546,7 @@ function EditMenuModal({ isOpen, onClose, onSave, item, categories = [], details
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Editar Produto">
-      <form onSubmit={(e) => {
+      <form key={item.id} onSubmit={(e) => {
         e.preventDefault();
         const formData = new FormData(e.currentTarget);
         onSave({
@@ -2283,7 +3573,10 @@ function EditMenuModal({ isOpen, onClose, onSave, item, categories = [], details
             <select 
               name="type" 
               value={selectedCategory}
-              onChange={(e) => setSelectedCategory(e.target.value)}
+              onChange={(e) => {
+                setSelectedCategory(e.target.value);
+                setSelectedGroup('');
+              }}
               className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100"
             >
               <option value="">Selecione...</option>
@@ -2294,7 +3587,12 @@ function EditMenuModal({ isOpen, onClose, onSave, item, categories = [], details
           </div>
           <div className="space-y-2">
             <label className="text-sm font-medium dark:text-zinc-300">Grupo</label>
-            <select name="category" defaultValue={item.category} className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100">
+            <select 
+              name="category" 
+              value={selectedGroup}
+              onChange={(e) => setSelectedGroup(e.target.value)}
+              className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100"
+            >
               <option value="">Selecione...</option>
               {filteredDetails.map((g: any) => (
                 <option key={g.id} value={g.name}>{g.name}</option>
@@ -2390,7 +3688,7 @@ function AddMenuModal({ isOpen, onClose, onSave, categories = [], details = [] }
   );
 }
 
-function OrderModal({ isOpen, onClose, menu, categories = [], details = [], onSend }: any) {
+function OrderModal({ isOpen, onClose, menu, categories = [], details = [], onSend, vibrate }: any) {
   const [cart, setCart] = useState<any[]>([]);
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
@@ -2417,6 +3715,7 @@ function OrderModal({ isOpen, onClose, menu, categories = [], details = [], onSe
       }
       return [...prev, { ...item, quantity: 1 }];
     });
+    setSearch('');
   };
 
   const removeFromCart = (id: string) => {
@@ -2441,21 +3740,50 @@ function OrderModal({ isOpen, onClose, menu, categories = [], details = [], onSe
     }));
   };
 
-  const filteredMenu = menu.filter((item: any) => {
-    if (item.active === 0) return false;
-    if (search) {
-      return item.name.toLowerCase().includes(search.toLowerCase());
-    }
-    const matchesCategory = activeCategory ? item.type === activeCategory : true;
-    const matchesGroup = activeGroup ? item.category === activeGroup : true;
-    return matchesCategory && matchesGroup;
-  });
+  const filteredMenu = useMemo(() => {
+    const filtered = menu.filter((item: any) => {
+      if (item.active === 0) return false;
+      
+      if (search) {
+        const normalizedSearch = search.normalize('NFD').replace(/[\u0300-\u036f]/g, "").toLowerCase();
+        const normalizedName = item.name.normalize('NFD').replace(/[\u0300-\u036f]/g, "").toLowerCase();
+        return normalizedName.includes(normalizedSearch);
+      }
+      
+      const matchesCategory = activeCategory ? item.type === activeCategory : true;
+      const matchesGroup = activeGroup ? item.category === activeGroup : true;
+      
+      return matchesCategory && matchesGroup;
+    });
+
+    return filtered;
+  }, [menu, search, activeCategory, activeGroup]);
+
+  const groupedMenu = useMemo(() => {
+    const groups: { [key: string]: any[] } = {};
+    filteredMenu.forEach(item => {
+      const groupName = item.category || 'Outros';
+      if (!groups[groupName]) groups[groupName] = [];
+      groups[groupName].push(item);
+    });
+    return Object.keys(groups).sort((a, b) => {
+      if (a === 'Outros') return 1;
+      if (b === 'Outros') return -1;
+      const groupA = details.find((g: any) => g.name === a);
+      const groupB = details.find((g: any) => g.name === b);
+      const orderA = groupA?.sort_order ?? 999;
+      const orderB = groupB?.sort_order ?? 999;
+      return orderA - orderB;
+    }).map(key => ({
+      name: key,
+      items: groups[key].sort((a, b) => a.name.localeCompare(b.name))
+    }));
+  }, [filteredMenu, details]);
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Adicionar Pedido">
-      <div className="flex flex-col gap-6 max-h-[70vh]">
-        <div className="flex-1 overflow-y-auto overscroll-contain space-y-4 pr-2" style={{ WebkitOverflowScrolling: 'touch' }}>
-          
+    <Modal isOpen={isOpen} onClose={onClose} title="Adicionar Pedido" maxWidth="max-w-2xl">
+      <div className="flex flex-col gap-4 max-h-[85vh] md:max-h-[80vh]">
+        <div className="sticky top-0 z-10 bg-white dark:bg-zinc-900 pb-2 space-y-4">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
             <input
@@ -2463,125 +3791,130 @@ function OrderModal({ isOpen, onClose, menu, categories = [], details = [], onSe
               placeholder="Buscar itens..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full rounded-lg border border-zinc-200 bg-white py-2 pl-10 pr-4 text-sm outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100"
+              className="w-full rounded-xl border border-zinc-200 bg-white py-2.5 pl-10 pr-4 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 transition-all"
             />
           </div>
+
+          {!search && activeCategory && (
+            <div className="flex items-center justify-between bg-emerald-50 dark:bg-emerald-900/20 p-2 rounded-xl border border-emerald-100 dark:border-emerald-800/50 animate-in fade-in slide-in-from-top-2">
+              <div className="flex items-center gap-2 text-sm font-medium text-emerald-700 dark:text-emerald-400">
+                <button 
+                  onClick={() => { 
+                    vibrate(20);
+                    setActiveCategory(null); 
+                    setActiveGroup(null); 
+                  }} 
+                  className="hover:underline"
+                >
+                  Categorias
+                </button>
+                <ChevronRight className="h-4 w-4" />
+                <span className="font-bold text-emerald-900 dark:text-emerald-100">{activeCategory}</span>
+              </div>
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                className="h-8 px-3 text-xs font-bold bg-white dark:bg-zinc-900 shadow-sm border border-emerald-200 dark:border-emerald-800 text-emerald-600 hover:bg-emerald-50"
+                onClick={() => {
+                  vibrate(20);
+                  setActiveCategory(null);
+                  setActiveGroup(null);
+                }}
+              >
+                <ArrowLeft className="h-3.5 w-3.5 mr-1.5" /> Voltar
+              </Button>
+            </div>
+          )}
+        </div>
+
+        <div className="flex-1 overflow-y-auto overscroll-contain space-y-4 pr-2 -mr-2" style={{ WebkitOverflowScrolling: 'touch' }}>
 
           {search ? (
             <div className="space-y-2">
               {filteredMenu.map((item: any) => (
                 <button 
                   key={item.id} 
-                  onClick={() => addToCart(item)}
-                  className="flex w-full items-center justify-between rounded-lg border border-zinc-100 p-3 hover:bg-zinc-50 transition-colors dark:border-zinc-800 dark:hover:bg-zinc-800"
+                  onClick={() => {
+                    vibrate(30);
+                    addToCart(item);
+                  }}
+                  className="flex w-full items-center justify-between rounded-xl border border-zinc-100 p-4 hover:bg-zinc-50 transition-all hover:border-emerald-200 dark:border-zinc-800 dark:hover:bg-zinc-800/50 dark:hover:border-emerald-900/50"
                 >
                   <div className="text-left">
-                    <p className="text-sm font-semibold dark:text-zinc-200">{item.name}</p>
-                    <p className="text-xs text-zinc-500 dark:text-zinc-400">R$ {item.price.toFixed(2)}</p>
+                    <p className="text-sm font-bold dark:text-zinc-100">{item.name}</p>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">{item.type} • {item.category} • R$ {item.price.toFixed(2)}</p>
                   </div>
-                  <Plus className="h-4 w-4 text-emerald-600 dark:text-emerald-500" />
+                  <div className="h-8 w-8 rounded-full bg-emerald-50 dark:bg-emerald-900/30 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
+                    <Plus className="h-4 w-4" />
+                  </div>
                 </button>
               ))}
               {filteredMenu.length === 0 && (
-                <div className="py-4 text-center text-sm text-zinc-500 dark:text-zinc-400">
-                  Nenhum item encontrado para "{search}".
+                <div className="py-12 text-center space-y-2">
+                  <Search className="h-12 w-12 text-zinc-200 dark:text-zinc-800 mx-auto" />
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                    Nenhum item encontrado para "{search}".
+                  </p>
                 </div>
               )}
             </div>
           ) : (
             <>
-              {(activeCategory || activeGroup) && (
-                <div className="flex items-center gap-2 text-sm font-medium text-zinc-500 dark:text-zinc-400">
-                  <button 
-                    onClick={() => { setActiveCategory(null); setActiveGroup(null); }} 
-                    className="hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors"
-                  >
-                    Categorias
-                  </button>
-                  {activeCategory && (
-                    <>
-                      <ChevronRight className="h-4 w-4" />
-                      <button 
-                        onClick={() => setActiveGroup(null)} 
-                        className={cn("hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors", !activeGroup && "text-zinc-900 dark:text-zinc-100")}
-                      >
-                        {activeCategory}
-                      </button>
-                    </>
-                  )}
-                  {activeGroup && (
-                    <>
-                      <ChevronRight className="h-4 w-4" />
-                      <span className="text-zinc-900 dark:text-zinc-100">{activeGroup}</span>
-                    </>
-                  )}
-                </div>
-              )}
-
               {!activeCategory ? (
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-3 gap-2 pb-4">
                   {categories.map((c: any) => {
                     const count = menu.filter((m: any) => m.active !== 0 && m.type === c.name).length;
                     if (count === 0) return null;
                     return (
                       <button 
                         key={c.id} 
-                        onClick={() => setActiveCategory(c.name)}
-                        className="flex flex-col items-center justify-center gap-1 rounded-xl border border-zinc-200 bg-white p-2 shadow-sm transition-all hover:border-emerald-500 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-emerald-500"
+                        onClick={() => {
+                          vibrate(30);
+                          setActiveCategory(c.name);
+                        }}
+                        className="flex flex-col items-center justify-center gap-1 rounded-xl border border-zinc-200 bg-white p-2 shadow-sm transition-all hover:border-emerald-500 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-emerald-500 group"
                       >
-                        <span className="text-sm font-bold text-zinc-900 dark:text-zinc-100">{c.name}</span>
-                        <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">{count} itens</span>
+                        <span className="text-[11px] font-bold text-zinc-900 dark:text-zinc-100 text-center leading-tight line-clamp-2">{c.name}</span>
+                        <div className="flex items-center gap-1">
+                          <Tags className="h-3 w-3 text-zinc-400 dark:text-zinc-500" />
+                          <span className="text-[9px] font-bold uppercase tracking-wider text-zinc-400">{count} itens</span>
+                        </div>
                       </button>
                     );
                   })}
-                  {categories.filter((c: any) => menu.filter((m: any) => m.active !== 0 && m.type === c.name).length > 0).length === 0 && (
-                    <div className="col-span-full py-4 text-center text-sm text-zinc-500 dark:text-zinc-400">
-                      Nenhuma categoria com itens disponíveis.
-                    </div>
-                  )}
-                </div>
-              ) : !activeGroup ? (
-                <div className="grid grid-cols-2 gap-2">
-                  {details.filter((g: any) => g.category_name === activeCategory).map((g: any) => {
-                    const count = menu.filter((m: any) => m.active !== 0 && m.type === activeCategory && m.category === g.name).length;
-                    if (count === 0) return null;
-                    return (
-                      <button 
-                        key={g.id} 
-                        onClick={() => setActiveGroup(g.name)}
-                        className="flex flex-col items-center justify-center gap-1 rounded-xl border border-zinc-200 bg-white p-2 shadow-sm transition-all hover:border-emerald-500 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-emerald-500"
-                      >
-                        <span className="text-sm font-bold text-zinc-900 dark:text-zinc-100">{g.name}</span>
-                        <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">{count} itens</span>
-                      </button>
-                    );
-                  })}
-                  {details.filter((g: any) => g.category_name === activeCategory && menu.filter((m: any) => m.active !== 0 && m.type === activeCategory && m.category === g.name).length > 0).length === 0 && (
-                    <div className="col-span-full py-4 text-center text-sm text-zinc-500 dark:text-zinc-400">
-                      Nenhum detalhe com itens disponíveis.
-                    </div>
-                  )}
                 </div>
               ) : (
-                <div className="space-y-2">
-                  {filteredMenu.map((item: any) => (
-                    <button 
-                      key={item.id} 
-                      onClick={() => addToCart(item)}
-                      className="flex w-full items-center justify-between rounded-lg border border-zinc-100 p-3 hover:bg-zinc-50 transition-colors dark:border-zinc-800 dark:hover:bg-zinc-800"
-                    >
-                      <div className="text-left">
-                        <p className="text-sm font-semibold dark:text-zinc-200">{item.name}</p>
-                        <p className="text-xs text-zinc-500 dark:text-zinc-400">R$ {item.price.toFixed(2)}</p>
+                <div className="space-y-8 pb-4">
+                  {groupedMenu.map(({ name: groupName, items }: any) => (
+                    <div key={groupName} className="space-y-3">
+                      <div className="flex items-center gap-3">
+                        <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-600 dark:text-emerald-500">
+                          {groupName}
+                        </h4>
+                        <div className="h-[2px] flex-1 bg-gradient-to-r from-emerald-100 to-transparent dark:from-emerald-900/30" />
                       </div>
-                      <Plus className="h-4 w-4 text-emerald-600 dark:text-emerald-500" />
-                    </button>
-                  ))}
-                  {filteredMenu.length === 0 && (
-                    <div className="py-4 text-center text-sm text-zinc-500 dark:text-zinc-400">
-                      Nenhum item nesta categoria e detalhe.
+                      <div className="grid gap-2">
+                        {items.map((item: any) => (
+                          <button 
+                            key={item.id} 
+                            onClick={() => {
+                              vibrate(30);
+                              addToCart(item);
+                            }}
+                            className="flex w-full items-center justify-between rounded-xl border border-zinc-100 p-4 hover:bg-zinc-50 transition-all hover:border-emerald-200 dark:border-zinc-800 dark:hover:bg-zinc-800/50 dark:hover:border-emerald-900/50"
+                          >
+                            <div className="text-left">
+                              <p className="text-sm font-bold dark:text-zinc-100">{item.name}</p>
+                              <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400 mt-1">R$ {item.price.toFixed(2)}</p>
+                            </div>
+                            <div className="h-8 w-8 rounded-full bg-emerald-50 dark:bg-emerald-900/30 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
+                              <Plus className="h-4 w-4" />
+                            </div>
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                  )}
+                  ))}
                 </div>
               )}
             </>
@@ -2623,10 +3956,15 @@ function OrderModal({ isOpen, onClose, menu, categories = [], details = [], onSe
                           setObservationText(item.observation || '');
                         }
                       }} 
-                      className="text-zinc-500 hover:bg-zinc-200 p-1 rounded dark:hover:bg-zinc-700 transition-colors"
+                      className={cn(
+                        "p-1.5 rounded transition-colors",
+                        item.observation 
+                          ? "text-amber-600 bg-amber-50 hover:bg-amber-100 dark:text-amber-400 dark:bg-amber-900/30 dark:hover:bg-amber-900/50" 
+                          : "text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-700"
+                      )}
                       title="Adicionar observação"
                     >
-                      <MessageSquare className="h-4 w-4" />
+                      <MessageSquareText className="h-4 w-4" />
                     </button>
                     <button onClick={() => removeFromCart(item.id)} className="text-rose-500 hover:bg-rose-100 p-1 rounded dark:hover:bg-rose-900/20 transition-colors" title="Remover">
                       <Trash2 className="h-4 w-4" />
@@ -2662,8 +4000,9 @@ function OrderModal({ isOpen, onClose, menu, categories = [], details = [], onSe
                     </Button>
                   </div>
                 ) : item.observation ? (
-                  <div className="text-xs text-zinc-500 dark:text-zinc-400 italic pl-1">
-                    Obs: {item.observation}
+                  <div className="text-xs text-amber-600 dark:text-amber-400 italic pl-1 flex items-center gap-1 mt-1">
+                    <StickyNote className="h-3 w-3" />
+                    <span>Obs: {item.observation}</span>
                   </div>
                 ) : null}
               </div>
@@ -2673,7 +4012,11 @@ function OrderModal({ isOpen, onClose, menu, categories = [], details = [], onSe
           <Button 
             disabled={cart.length === 0} 
             className="w-full" 
-            onClick={() => onSend(cart.map(i => ({ menuItemId: i.id, quantity: i.quantity, observation: i.observation })))}
+            onClick={() => {
+              vibrate([50, 100, 50]);
+              onSend(cart.map(i => ({ menuItemId: i.id, quantity: i.quantity, observation: i.observation })));
+              onClose();
+            }}
           >
             Enviar Pedido
           </Button>
