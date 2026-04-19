@@ -101,6 +101,52 @@ db.exec(`
     key TEXT PRIMARY KEY,
     value TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS cashier_sessions (
+    id TEXT PRIMARY KEY,
+    opened_at TEXT,
+    closed_at TEXT,
+    opened_by_id TEXT,
+    opened_by_name TEXT,
+    closed_by_id TEXT,
+    closed_by_name TEXT,
+    initial_balance REAL DEFAULT 0,
+    final_balance REAL,
+    status TEXT DEFAULT 'open'
+  );
+
+  CREATE TABLE IF NOT EXISTS cashier_transactions (
+    id TEXT PRIMARY KEY,
+    session_id TEXT,
+    type TEXT,
+    amount REAL,
+    description TEXT,
+    method TEXT,
+    timestamp TEXT,
+    user_id TEXT,
+    username TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS accounts_payable (
+    id TEXT PRIMARY KEY,
+    description TEXT,
+    amount REAL,
+    due_date TEXT,
+    status TEXT DEFAULT 'pending',
+    category TEXT,
+    timestamp TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    title TEXT,
+    description TEXT,
+    assigned_to TEXT,
+    created_by TEXT,
+    created_by_name TEXT,
+    status TEXT DEFAULT 'pending',
+    timestamp TEXT
+  );
 `);
 
 try {
@@ -165,22 +211,26 @@ const defaultPermissions: any = {
   admin: { 
     mesas: true, historico: true, cardapio: true, erp: true, config: true, 
     edit_menu: true, delete_order: true, manage_users: true, clear_history: true, 
-    mark_history_read: true, manage_categories: true, reorder_categories: true, reorder_groups: true 
+    mark_history_read: true, manage_categories: true, reorder_categories: true, reorder_groups: true,
+    apply_discount: true, remove_service_fee: true, manage_printer: true, manage_tasks: true, manage_tables: true
   },
   waiter: { 
     mesas: true, historico: true, cardapio: true, erp: false, config: true, 
     edit_menu: false, delete_order: false, manage_users: false, clear_history: false, 
-    mark_history_read: false, manage_categories: false, reorder_categories: false, reorder_groups: false 
+    mark_history_read: false, manage_categories: false, reorder_categories: false, reorder_groups: false,
+    apply_discount: false, remove_service_fee: false, manage_printer: false, manage_tasks: false, manage_tables: false
   },
   kitchen: { 
     mesas: true, historico: false, cardapio: true, erp: false, config: true, 
     edit_menu: false, delete_order: false, manage_users: false, clear_history: false, 
-    mark_history_read: false, manage_categories: false, reorder_categories: false, reorder_groups: false 
+    mark_history_read: false, manage_categories: false, reorder_categories: false, reorder_groups: false,
+    apply_discount: false, remove_service_fee: false, manage_printer: false, manage_tasks: false, manage_tables: false
   },
   caixa: { 
     mesas: true, historico: true, cardapio: true, erp: true, config: true, 
     edit_menu: false, delete_order: true, manage_users: false, clear_history: false, 
-    mark_history_read: true, manage_categories: false, reorder_categories: false, reorder_groups: false 
+    mark_history_read: true, manage_categories: false, reorder_categories: false, reorder_groups: false,
+    apply_discount: true, remove_service_fee: true, manage_printer: false, manage_tasks: false, manage_tables: false
   }
 };
 
@@ -224,7 +274,7 @@ try {
 }
 
 // Seed initial data
-async function seedData() {
+function seedSQLite() {
   const hostUser = db.prepare("SELECT * FROM users WHERE username = ?").get("deckserrinha") as any;
   let hostId = hostUser?.id;
   
@@ -235,12 +285,15 @@ async function seedData() {
   } else if (!hostUser.password) {
     db.prepare("UPDATE users SET password = ? WHERE username = ?").run("deckappadmin", "deckserrinha");
   }
+  return hostId || "deckserrinha";
+}
 
+async function syncHostToFirestore(hostId: string) {
   // Ensure host exists in Firestore with correct password
   try {
-    const hostDoc = await getDoc(doc(firestoreDb, "users", hostId || "deckserrinha")).catch(() => null);
+    const hostDoc = await getDoc(doc(firestoreDb, "users", hostId)).catch(() => null);
     if (!hostDoc?.exists() || !hostDoc.data()?.password) {
-      await setDoc(doc(firestoreDb, "users", hostId || "deckserrinha"), {
+      await setDoc(doc(firestoreDb, "users", hostId), {
         username: "deckserrinha",
         password: "deckappadmin",
         role: "host",
@@ -254,7 +307,7 @@ async function seedData() {
   }
 }
 
-seedData();
+const hostId = seedSQLite();
 
 const tablesCount = db.prepare("SELECT COUNT(*) as count FROM tables").get() as { count: number };
 for (let i = 1; i <= 30; i++) {
@@ -352,6 +405,7 @@ async function authenticateServer() {
 async function loadFromFirestore() {
   try {
     await authenticateServer();
+    await syncHostToFirestore(hostId);
     console.log("Loading data from Firestore...");
     
     // Menu Items
@@ -512,6 +566,26 @@ async function loadFromFirestore() {
       ordersSnapshot.forEach(doc => {
         const data = doc.data();
         insertOrder.run(doc.id, data.table_id, data.menu_item_id, data.quantity, data.status, data.is_read || 0, data.observation || null, data.timestamp);
+      });
+    }
+
+    // Cashier
+    const sessionsSnapshot = await getDocs(collection(firestoreDb, "cashier_sessions")).catch(e => handleFirestoreError(e, OperationType.GET, "cashier_sessions"));
+    if (sessionsSnapshot && !sessionsSnapshot.empty) {
+      const insertSession = db.prepare("INSERT OR REPLACE INTO cashier_sessions (id, opened_at, closed_at, opened_by_id, opened_by_name, closed_by_id, closed_by_name, initial_balance, final_balance, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+      sessionsSnapshot.forEach(doc => {
+        const data = doc.data();
+        insertSession.run(doc.id, data.opened_at, data.closed_at || null, data.opened_by_id, data.opened_by_name, data.closed_by_id || null, data.closed_by_name || null, data.initial_balance || 0, data.final_balance || null, data.status || 'open');
+      });
+    }
+
+    // Transactions
+    const transactionsSnapshot = await getDocs(collection(firestoreDb, "cashier_transactions")).catch(e => handleFirestoreError(e, OperationType.GET, "cashier_transactions"));
+    if (transactionsSnapshot && !transactionsSnapshot.empty) {
+      const insertTx = db.prepare("INSERT OR REPLACE INTO cashier_transactions (id, session_id, type, amount, description, method, timestamp, user_id, username) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+      transactionsSnapshot.forEach(doc => {
+        const data = doc.data();
+        insertTx.run(doc.id, data.session_id, data.type, data.amount, data.description || null, data.method || null, data.timestamp, data.user_id || null, data.username || null);
       });
     }
 
@@ -684,15 +758,22 @@ const app = express();
     broadcast({ type: "HISTORY_UPDATE", payload: history });
   }, 5 * 60 * 1000);
 
-  const clients = new Set<WebSocket>();
+  const clients = new Map<WebSocket, { userId?: string, username?: string, role?: string }>();
 
   function broadcast(data: any, excludeWs?: WebSocket) {
     const message = JSON.stringify(data);
-    clients.forEach((client) => {
+    clients.forEach((_, client) => {
       if (client.readyState === WebSocket.OPEN && client !== excludeWs) {
         client.send(message);
       }
     });
+  }
+
+  function broadcastOnlineUsers() {
+    const onlineUsers = Array.from(clients.values())
+      .filter(u => u.userId)
+      .map(u => ({ userId: u.userId, username: u.username, role: u.role }));
+    broadcast({ type: "ONLINE_USERS", payload: onlineUsers });
   }
 
   async function logHistory(userId: string, username: string, action: string, details: string, orderId: string | null = null, itemGroup: string | null = null, tableId: number | null = null, requestId: string | null = null) {
@@ -719,7 +800,7 @@ const app = express();
   }
 
   wss.on("connection", (ws) => {
-    clients.add(ws);
+    clients.set(ws, {});
 
     // Initial sync
     const tables = db.prepare("SELECT * FROM tables").all();
@@ -750,6 +831,29 @@ const app = express();
       ORDER BY c.sort_order ASC, g.sort_order ASC
     `).all();
     ws.send(JSON.stringify({ type: "DETAILS_UPDATE", payload: groups }));
+
+    const activeSession = db.prepare("SELECT * FROM cashier_sessions WHERE status = 'open'").get() as any;
+    if (activeSession) {
+      ws.send(JSON.stringify({ 
+        type: "CASHIER_STATUS", 
+        payload: { 
+          status: 'open', 
+          sessionId: activeSession.id, 
+          initialBalance: activeSession.initial_balance,
+          openedAt: activeSession.opened_at
+        } 
+      }));
+      const transactions = db.prepare("SELECT * FROM cashier_transactions WHERE session_id = ? ORDER BY timestamp DESC").all(activeSession.id);
+      ws.send(JSON.stringify({ type: "CASHIER_TRANSACTIONS", payload: transactions }));
+    } else {
+      ws.send(JSON.stringify({ type: "CASHIER_STATUS", payload: { status: 'closed' } }));
+    }
+
+    const tasks = db.prepare("SELECT * FROM tasks ORDER BY timestamp DESC").all();
+    ws.send(JSON.stringify({ type: "TASKS_SYNC", payload: tasks }));
+
+    const accountsPayable = db.prepare("SELECT * FROM accounts_payable ORDER BY due_date ASC").all();
+    ws.send(JSON.stringify({ type: "ACCOUNTS_PAYABLE_SYNC", payload: accountsPayable }));
 
     ws.on("message", async (message) => {
       try {
@@ -791,6 +895,249 @@ const app = express();
               JOIN menu_items m ON o.menu_item_id = m.id
             `).all();
             ws.send(JSON.stringify({ type: "ORDERS_SYNC", payload: orders }));
+            
+            const onlineUsers = Array.from(clients.values())
+              .filter(u => u.userId)
+              .map(u => ({ userId: u.userId, username: u.username, role: u.role }));
+            ws.send(JSON.stringify({ type: "ONLINE_USERS", payload: onlineUsers }));
+            
+            const activeSession = db.prepare("SELECT * FROM cashier_sessions WHERE status = 'open'").get() as any;
+            if (activeSession) {
+              ws.send(JSON.stringify({ 
+                type: "CASHIER_STATUS", 
+                payload: { 
+                  status: 'open', 
+                  sessionId: activeSession.id, 
+                  initialBalance: activeSession.initial_balance 
+                } 
+              }));
+              const transactions = db.prepare("SELECT * FROM cashier_transactions WHERE session_id = ? ORDER BY timestamp DESC").all(activeSession.id);
+              ws.send(JSON.stringify({ type: "CASHIER_TRANSACTIONS", payload: transactions }));
+            } else {
+              ws.send(JSON.stringify({ type: "CASHIER_STATUS", payload: { status: 'closed' } }));
+            }
+
+            const accountsPayable = db.prepare("SELECT * FROM accounts_payable ORDER BY due_date ASC").all();
+            ws.send(JSON.stringify({ type: "ACCOUNTS_PAYABLE_SYNC", payload: accountsPayable }));
+
+            const tasks = db.prepare("SELECT * FROM tasks ORDER BY timestamp DESC").all();
+            ws.send(JSON.stringify({ type: "TASKS_SYNC", payload: tasks }));
+            break;
+          }
+
+          case "USER_IDENTIFY": {
+            clients.set(ws, { 
+              userId: data.payload.userId, 
+              username: data.payload.username, 
+              role: data.payload.role 
+            });
+            broadcastOnlineUsers();
+            break;
+          }
+
+          case "USER_DISCONNECT": {
+            const { userId } = data.payload;
+            let disconnected = false;
+            clients.forEach((info, client) => {
+              if (info.userId === userId && info.role !== 'host') {
+                client.send(JSON.stringify({ 
+                  type: "FORCE_LOGOUT", 
+                  payload: { message: "Você foi desconectado pelo administrador." } 
+                }));
+                setTimeout(() => client.close(), 500);
+                disconnected = true;
+              }
+            });
+            if (disconnected) {
+              broadcast({ type: "NOTIFICATION", payload: { message: "Usuário desconectado com sucesso", type: 'success' } });
+            }
+            break;
+          }
+
+          case "USER_FORCE_LOGOUT": {
+            const { userId } = data.payload;
+            clients.forEach((info, client) => {
+              if (info.userId === userId) {
+                client.send(JSON.stringify({ type: "FORCE_LOGOUT", payload: { message: "Sua sessão foi encerrada pelo administrador." } }));
+              }
+            });
+            break;
+          }
+
+          case "HISTORY_GET_ALL": {
+            const allHistory = db.prepare("SELECT * FROM history ORDER BY timestamp DESC").all();
+            ws.send(JSON.stringify({ type: "HISTORY_ALL_DATA", payload: allHistory }));
+            break;
+          }
+
+          case "CASHIER_OPEN": {
+            const { userId, username, initialBalance } = data.payload;
+            const id = uuidv4();
+            const timestamp = new Date().toISOString();
+            db.prepare("INSERT INTO cashier_sessions (id, opened_at, opened_by_id, opened_by_name, initial_balance, status) VALUES (?, ?, ?, ?, ?, ?)")
+              .run(id, timestamp, userId, username, initialBalance, 'open');
+            
+            setDoc(doc(firestoreDb, "cashier_sessions", id), {
+              opened_at: timestamp, opened_by_id: userId, opened_by_name: username, initial_balance: initialBalance, status: 'open'
+            }).catch(e => handleFirestoreError(e, OperationType.CREATE, "cashier_sessions"));
+            
+            broadcast({ type: "CASHIER_STATUS", payload: { status: 'open', sessionId: id, initialBalance, openedAt: timestamp } });
+            broadcast({ type: "CASHIER_TRANSACTIONS", payload: [] });
+            
+            broadcast({
+              type: "PRINT_COMMAND",
+              payload: {
+                type: 'cashier_open', // Specific type
+                title: 'Abertura de Caixa',
+                operator: username,
+                data: { 'Saldo Inicial': initialBalance }
+              }
+            });
+            break;
+          }
+
+          case "CASHIER_CLOSE": {
+            const { userId, username, sessionId, finalBalance } = data.payload;
+            const timestamp = new Date().toISOString();
+
+            // Calculate summary for printing
+            const session = db.prepare("SELECT * FROM cashier_sessions WHERE id = ?").get(sessionId) as any;
+            const transactions = db.prepare("SELECT * FROM cashier_transactions WHERE session_id = ?").all(sessionId) as any[];
+            
+            const income = transactions.filter(t => t.type === 'sale' || t.type === 'income').reduce((sum, t) => sum + t.amount, 0);
+            const expense = transactions.filter(t => t.type === 'expense').reduce((sum, t) => sum + t.amount, 0);
+            const byMethod = transactions.filter(t => t.type === 'sale' || t.type === 'income').reduce((acc, t) => {
+              const m = t.method || 'outros';
+              acc[m] = (acc[m] || 0) + t.amount;
+              return acc;
+            }, {} as any);
+
+            db.prepare("UPDATE cashier_sessions SET closed_at = ?, closed_by_id = ?, closed_by_name = ?, final_balance = ?, status = ? WHERE id = ?")
+              .run(timestamp, userId, username, finalBalance, 'closed', sessionId);
+            
+            setDoc(doc(firestoreDb, "cashier_sessions", sessionId), {
+              closed_at: timestamp, closed_by_id: userId, closed_by_name: username, final_balance: finalBalance, status: 'closed'
+            }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "cashier_sessions"));
+            
+            broadcast({ type: "CASHIER_STATUS", payload: { status: 'closed' } });
+
+            broadcast({
+              type: "PRINT_COMMAND",
+              payload: {
+                type: 'cashier_close', // Specific type
+                title: 'Fechamento de Caixa',
+                operator: username,
+                data: {
+                  'Abertura': new Date(session.opened_at).toLocaleString(),
+                  'Saldo Inicial': session.initial_balance,
+                  'Total Entradas': income,
+                  'Total Saídas': expense,
+                  'Saldo Final': finalBalance,
+                  'Entradas por Método': byMethod
+                }
+              }
+            });
+            break;
+          }
+
+          case "CASHIER_TRANSACTION": {
+            const { sessionId, type, amount, description, method, userId, username } = data.payload;
+            const id = uuidv4();
+            const timestamp = new Date().toISOString();
+            db.prepare("INSERT INTO cashier_transactions (id, session_id, type, amount, description, method, timestamp, user_id, username) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+              .run(id, sessionId, type, amount, description, method.toLowerCase(), timestamp, userId, username);
+            
+            setDoc(doc(firestoreDb, "cashier_transactions", id), {
+              session_id: sessionId, type, amount, description: description || null, method: method.toLowerCase(), timestamp, user_id: userId || null, username: username || null
+            }).catch(e => handleFirestoreError(e, OperationType.CREATE, "cashier_transactions"));
+
+            const transactions = db.prepare("SELECT * FROM cashier_transactions WHERE session_id = ? ORDER BY timestamp DESC").all(sessionId);
+            broadcast({ type: "CASHIER_TRANSACTIONS", payload: transactions });
+
+            if (type === 'expense' || type === 'income') {
+              broadcast({
+                type: "PRINT_COMMAND",
+                payload: {
+                  type: 'cashier_slip',
+                  title: type === 'expense' ? 'Comprovante de Sangria' : 'Comprovante de Reforço',
+                  operator: username,
+                  data: {
+                    'Valor': amount,
+                    'Descrição': description,
+                    'Método': method
+                  }
+                }
+              });
+            }
+            break;
+          }
+
+          case "ACCOUNTS_PAYABLE_ADD": {
+            const { description, amount, dueDate, category } = data.payload;
+            const id = uuidv4();
+            const timestamp = new Date().toISOString();
+            db.prepare("INSERT INTO accounts_payable (id, description, amount, due_date, status, category, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)")
+              .run(id, description, amount, dueDate, 'pending', category, timestamp);
+            
+            const accountsPayable = db.prepare("SELECT * FROM accounts_payable ORDER BY due_date ASC").all();
+            broadcast({ type: "ACCOUNTS_PAYABLE_SYNC", payload: accountsPayable });
+            break;
+          }
+
+          case "ACCOUNTS_PAYABLE_DELETE": {
+            const { id } = data.payload;
+            db.prepare("DELETE FROM accounts_payable WHERE id = ?").run(id);
+            const accountsPayable = db.prepare("SELECT * FROM accounts_payable ORDER BY due_date ASC").all();
+            broadcast({ type: "ACCOUNTS_PAYABLE_SYNC", payload: accountsPayable });
+            break;
+          }
+
+          case "ACCOUNTS_PAYABLE_PAY": {
+            const { id, sessionId, userId, username } = data.payload;
+            const account = db.prepare("SELECT * FROM accounts_payable WHERE id = ?").get(id) as any;
+            if (account) {
+              db.prepare("UPDATE accounts_payable SET status = 'paid' WHERE id = ?").run(id);
+              
+              // Record transaction in cashier if sessionId provided
+              if (sessionId) {
+                db.prepare("INSERT INTO cashier_transactions (id, session_id, type, amount, description, method, timestamp, user_id, username) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                  .run(uuidv4(), sessionId, 'expense', account.amount, `Pagamento: ${account.description}`, 'dinheiro', new Date().toISOString(), userId, username);
+                
+                const transactions = db.prepare("SELECT * FROM cashier_transactions WHERE session_id = ? ORDER BY timestamp DESC").all(sessionId);
+                broadcast({ type: "CASHIER_TRANSACTIONS", payload: transactions });
+              }
+
+              const accountsPayable = db.prepare("SELECT * FROM accounts_payable ORDER BY due_date ASC").all();
+              broadcast({ type: "ACCOUNTS_PAYABLE_SYNC", payload: accountsPayable });
+            }
+            break;
+          }
+
+          case "TASK_ADD": {
+            const { title, description, assignedTo, userId, username } = data.payload;
+            const id = uuidv4();
+            const timestamp = new Date().toISOString();
+            db.prepare("INSERT INTO tasks (id, title, description, assigned_to, created_by, created_by_name, status, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+              .run(id, title, description, JSON.stringify(assignedTo), userId, username, 'pending', timestamp);
+            
+            const tasks = db.prepare("SELECT * FROM tasks ORDER BY timestamp DESC").all();
+            broadcast({ type: "TASKS_SYNC", payload: tasks });
+            break;
+          }
+
+          case "TASK_UPDATE": {
+            const { id, status } = data.payload;
+            db.prepare("UPDATE tasks SET status = ? WHERE id = ?").run(status, id);
+            const tasks = db.prepare("SELECT * FROM tasks ORDER BY timestamp DESC").all();
+            broadcast({ type: "TASKS_SYNC", payload: tasks });
+            break;
+          }
+
+          case "TASK_DELETE": {
+            const { id } = data.payload;
+            db.prepare("DELETE FROM tasks WHERE id = ?").run(id);
+            const tasks = db.prepare("SELECT * FROM tasks ORDER BY timestamp DESC").all();
+            broadcast({ type: "TASKS_SYNC", payload: tasks });
             break;
           }
 
@@ -809,14 +1156,67 @@ const app = express();
             broadcast({ type: "SETTINGS_UPDATE", payload: updatedSettingsObj });
             
             if (tokenChanged) {
-              broadcast({ type: "FORCE_LOGOUT", payload: { message: "Token de acesso alterado. Por favor, faça login novamente." } });
+              const logoutMsg = JSON.stringify({ type: "FORCE_LOGOUT", payload: { message: "Token de acesso alterado. Por favor, faça login novamente." } });
+              clients.forEach((info, client) => {
+                if (info.role !== 'host' && client.readyState === WebSocket.OPEN) {
+                  client.send(logoutMsg);
+                  setTimeout(() => client.close(), 500);
+                }
+              });
             }
             break;
+
+          case "ROLE_RENAME": {
+            const { oldName, newName } = data.payload;
+            db.prepare("UPDATE users SET role = ? WHERE role = ?").run(newName, oldName);
+            const oldPermsKey = `permissions_${oldName}`;
+            const newPermsKey = `permissions_${newName}`;
+            const oldPerms = db.prepare("SELECT value FROM settings WHERE key = ?").get(oldPermsKey) as any;
+            if (oldPerms) {
+              db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(newPermsKey, oldPerms.value);
+              db.prepare("DELETE FROM settings WHERE key = ?").run(oldPermsKey);
+            }
+            const customRolesStr = db.prepare("SELECT value FROM settings WHERE key = 'custom_roles'").get() as any;
+            if (customRolesStr) {
+              let roles = JSON.parse(customRolesStr.value);
+              roles = roles.map((r: string) => r === oldName ? newName : r);
+              db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run('custom_roles', JSON.stringify(roles));
+            }
+            const users = db.prepare("SELECT * FROM users").all();
+            broadcast({ type: "USERS_SYNC", payload: users });
+            const settings = db.prepare("SELECT * FROM settings").all();
+            const settingsObj = settings.reduce((acc: any, curr: any) => ({ ...acc, [curr.key]: curr.value }), {});
+            broadcast({ type: "SETTINGS_UPDATE", payload: settingsObj });
+            break;
+          }
+
+          case "ROLE_DELETE": {
+            const { roleName } = data.payload;
+            db.prepare("UPDATE users SET role = 'waiter' WHERE role = ?").run(roleName);
+            db.prepare("DELETE FROM settings WHERE key = ?").run(`permissions_${roleName}`);
+            const customRolesStr = db.prepare("SELECT value FROM settings WHERE key = 'custom_roles'").get() as any;
+            if (customRolesStr) {
+              let roles = JSON.parse(customRolesStr.value);
+              roles = roles.filter((r: string) => r !== roleName);
+              db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run('custom_roles', JSON.stringify(roles));
+            }
+            const users = db.prepare("SELECT * FROM users").all();
+            broadcast({ type: "USERS_SYNC", payload: users });
+            const settings = db.prepare("SELECT * FROM settings").all();
+            const settingsObj = settings.reduce((acc: any, curr: any) => ({ ...acc, [curr.key]: curr.value }), {});
+            broadcast({ type: "SETTINGS_UPDATE", payload: settingsObj });
+            break;
+          }
 
           case "TABLE_OPEN": {
             const tableId = Number(data.payload.tableId);
             const tableType = data.payload.tableType || 'salao';
             console.log(`[Server] TABLE_OPEN received for table ${tableId} type ${tableType}`);
+
+            // Get table type name from settings
+            const settingsTableTypes = db.prepare("SELECT value FROM settings WHERE key = 'table_types'").get() as { value: string } | undefined;
+            const tableTypes = JSON.parse(settingsTableTypes?.value || '[{"id":"salao","name":"Salão","color":"#10b981"},{"id":"gramado","name":"Gramado","color":"#3b82f6"}]');
+            const currentType = tableTypes.find((t: any) => t.id === tableType) || { name: tableType === 'salao' ? 'Salão' : 'Gramado' };
             
             // Ensure no old orders exist for this table in SQLite
             db.prepare("DELETE FROM orders WHERE table_id = ?").run(tableId);
@@ -848,9 +1248,9 @@ const app = express();
 
             const updatedTable = db.prepare("SELECT * FROM tables WHERE id = ?").get(tableId);
             broadcast({ type: "TABLE_UPDATE", payload: updatedTable });
-            broadcast({ type: "NOTIFICATION", payload: { message: `Mesa ${formatTableNumber(tableId)} (${tableType === 'salao' ? 'Salão' : 'Gramado'}) aberta`, type: 'info' } });
+            broadcast({ type: "NOTIFICATION", payload: { message: `Mesa ${formatTableNumber(tableId)} (${currentType.name}) aberta`, type: 'info' } });
             
-            await logHistory(data.payload.userId, data.payload.username, "ABRIR_MESA", `(${tableType === 'salao' ? 'Salão' : 'Gramado'}) aberta para ${data.payload.customerName || 'N/A'}`, null, null, tableId);
+            await logHistory(data.payload.userId, data.payload.username, "ABRIR_MESA", `(${currentType.name}) aberta para ${data.payload.customerName || 'N/A'}`, null, null, tableId);
             break;
           }
 
@@ -875,29 +1275,71 @@ const app = express();
             broadcast({ type: "BILL_REQUEST", payload: { tableId: data.payload.tableId, customerName: tableWithBill.customer_name } });
             broadcast({ type: "NOTIFICATION", payload: { message: `Mesa ${formatTableNumber(data.payload.tableId)} pediu a conta!`, type: 'warning' } });
             await logHistory(data.payload.userId, data.payload.username, "PEDIR_CONTA", `Solicitou fechamento`, null, null, data.payload.tableId);
+
+            // Print bill command
+            const billTableOrders = db.prepare(`
+              SELECT o.*, m.name as item_name, m.price as item_price 
+              FROM orders o
+              JOIN menu_items m ON o.menu_item_id = m.id
+              WHERE o.table_id = ?
+            `).all(data.payload.tableId);
+            broadcast({
+              type: "PRINT_COMMAND",
+              payload: {
+                type: 'table_bill',
+                table: tableWithBill,
+                orders: billTableOrders,
+                operator: data.payload.username || 'Sistema'
+              }
+            });
             break;
 
           case "TABLE_CLOSE": {
-            const tableId = Number(data.payload.tableId);
+            const { tableId, userId, username, paymentMethods, paymentDetails, total } = data.payload;
+            const tableNum = Number(tableId);
+
+            // Get customer name and orders before clearing
+            const tableData = db.prepare("SELECT customer_name, number FROM tables WHERE id = ?").get(tableNum) as any;
+            const customerName = tableData?.customer_name || '';
+            const receiptOrders = db.prepare(`
+               SELECT o.*, m.name as item_name, m.price as item_price 
+               FROM orders o
+               JOIN menu_items m ON o.menu_item_id = m.id
+               WHERE o.table_id = ?
+            `).all(tableNum);
+
+            // Record transaction if cashier is open
+            const activeSession = db.prepare("SELECT id FROM cashier_sessions WHERE status = 'open'").get() as { id: string } | undefined;
+            if (activeSession && total > 0) {
+              const methods = paymentMethods || [];
+              methods.forEach((method: string) => {
+                const amount = paymentDetails ? paymentDetails[method] : (total / methods.length);
+                const description = customerName ? `Venda Mesa ${tableData?.number || tableNum} (${customerName})` : `Venda Mesa ${tableData?.number || tableNum}`;
+                db.prepare(`
+                  INSERT INTO cashier_transactions (id, session_id, type, amount, description, method, timestamp, user_id, username)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `).run(uuidv4(), activeSession.id, 'sale', amount, description, method.toLowerCase(), new Date().toISOString(), userId, username);
+              });
+            }
+
             // Clear table in SQLite
-            db.prepare("UPDATE tables SET status = 'free', customer_name = NULL, people_count = NULL, opened_at = NULL, type = 'salao' WHERE id = ?")
-              .run(tableId);
+            db.prepare("UPDATE tables SET status = 'free', customer_name = NULL, people_count = NULL, opened_at = NULL WHERE id = ?")
+              .run(tableNum);
             
             // Clear table in Firestore
-            await setDoc(doc(firestoreDb, "tables", String(tableId)), {
-              number: tableId,
+            await setDoc(doc(firestoreDb, "tables", String(tableNum)), {
+              number: tableNum,
               status: 'free',
               customer_name: null,
               people_count: null,
-              opened_at: null,
-              type: 'salao'
+              opened_at: null
             }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "tables"));
 
             // Clear orders for this table in SQLite
-            db.prepare("DELETE FROM orders WHERE table_id = ?").run(tableId);
+            db.prepare("DELETE FROM orders WHERE table_id = ?").run(tableNum);
             
             // Clear orders for this table in Firestore using batch
-            const closeOrdersQuery = query(collection(firestoreDb, "orders"), where("table_id", "==", tableId));
+            const closeOrdersQuery = query(collection(firestoreDb, "orders"), where("table_id", "==", tableNum));
             const tableOrdersToDelete = await getDocs(closeOrdersQuery).catch(e => handleFirestoreError(e, OperationType.GET, "orders"));
             
             if (tableOrdersToDelete && !tableOrdersToDelete.empty) {
@@ -908,11 +1350,109 @@ const app = express();
               await batch.commit().catch(e => handleFirestoreError(e, OperationType.DELETE, "orders"));
             }
             
-            const closedTable = db.prepare("SELECT * FROM tables WHERE id = ?").get(tableId);
+            const closedTable = db.prepare("SELECT * FROM tables WHERE id = ?").get(tableNum);
             broadcast({ type: "TABLE_UPDATE", payload: closedTable });
-            broadcast({ type: "TABLE_CLOSE", payload: { tableId: tableId, paymentMethods: data.payload.paymentMethods } });
-            broadcast({ type: "NOTIFICATION", payload: { message: `Mesa ${formatTableNumber(tableId)} fechada. Pagamento: ${data.payload.paymentMethods.join(', ')}`, type: 'success' } });
-            await logHistory(data.payload.userId, data.payload.username, "FECHAR_MESA", `Fechada. Métodos: ${data.payload.paymentMethods.join(', ')}`, null, null, tableId);
+            broadcast({ type: "TABLE_CLOSE", payload: { tableId: tableNum, paymentMethods: paymentMethods } });
+
+            // Print Receipt command broadcast
+            broadcast({
+              type: "PRINT_COMMAND",
+              payload: {
+                type: 'table_close', // Specific type
+                title: 'CUPOM NÃO FISCAL',
+                table: tableData,
+                orders: receiptOrders,
+                operator: username
+              }
+            });
+
+            if (activeSession) {
+              const transactions = db.prepare("SELECT * FROM cashier_transactions WHERE session_id = ? ORDER BY timestamp DESC").all(activeSession.id);
+              broadcast({ type: "CASHIER_TRANSACTIONS", payload: transactions });
+            }
+
+            broadcast({ type: "NOTIFICATION", payload: { message: `Mesa ${formatTableNumber(tableData?.number || tableNum)} fechada. Total: R$ ${total?.toFixed(2) || '0.00'}`, type: 'success' } });
+            await logHistory(userId, username, "FECHAR_MESA", `Fechada. Total: R$ ${total?.toFixed(2) || '0.00'}. Métodos: ${paymentMethods?.join(', ')}`, null, null, tableNum);
+            break;
+          }
+
+          case "TABLE_ADD_PERMANENT": {
+            const { number, type } = data.payload;
+            try {
+              db.prepare("INSERT INTO tables (number, type, status) VALUES (?, ?, 'free')").run(number, type);
+              const tables = db.prepare("SELECT * FROM tables").all();
+              broadcast({ type: "TABLES_SYNC", payload: tables });
+              broadcast({ type: "NOTIFICATION", payload: { message: `Mesa ${number} criada com sucesso!`, type: 'success' } });
+            } catch (e: any) {
+              ws.send(JSON.stringify({ type: "NOTIFICATION", payload: { message: "Erro ao criar mesa: Número já existe", type: 'error' } }));
+            }
+            break;
+          }
+
+          case "TABLE_EDIT_PERMANENT": {
+            const { tableId, number, type } = data.payload;
+            try {
+              db.prepare("UPDATE tables SET number = ?, type = ? WHERE id = ?").run(number, type, tableId);
+              const tables = db.prepare("SELECT * FROM tables").all();
+              broadcast({ type: "TABLES_SYNC", payload: tables });
+              broadcast({ type: "NOTIFICATION", payload: { message: `Mesa ${number} atualizada!`, type: 'success' } });
+            } catch (e: any) {
+              ws.send(JSON.stringify({ type: "NOTIFICATION", payload: { message: "Erro ao editar mesa", type: 'error' } }));
+            }
+            break;
+          }
+
+          case "TABLE_DELETE_PERMANENT": {
+            const { tableId } = data.payload;
+            db.prepare("DELETE FROM tables WHERE id = ?").run(Number(tableId));
+            
+            // Sync deletion to Firestore
+            await deleteDoc(doc(firestoreDb, "tables", String(tableId))).catch(e => handleFirestoreError(e, OperationType.DELETE, "tables"));
+
+            const tables = db.prepare("SELECT * FROM tables").all();
+            broadcast({ type: "TABLES_SYNC", payload: tables });
+            broadcast({ type: "NOTIFICATION", payload: { message: "Mesa excluída permanentemente", type: 'success' } });
+            break;
+          }
+
+          case "TABLES_RESET_ALL": {
+            const { userId, username } = data.payload;
+            db.prepare("UPDATE tables SET status = 'free', customer_name = NULL, people_count = NULL").run();
+            db.prepare("DELETE FROM orders").run();
+            
+            // Sync to Firestore
+            try {
+              const tablesSnapshot = await getDocs(collection(firestoreDb, "tables"));
+              if (!tablesSnapshot.empty) {
+                const batch = writeBatch(firestoreDb);
+                tablesSnapshot.docs.forEach(tableDoc => {
+                  batch.update(tableDoc.ref, {
+                    status: 'free',
+                    customer_name: null,
+                    people_count: null,
+                    opened_at: null
+                  });
+                });
+                await batch.commit();
+              }
+
+              const ordersSnapshot = await getDocs(collection(firestoreDb, "orders"));
+              if (!ordersSnapshot.empty) {
+                const batch = writeBatch(firestoreDb);
+                ordersSnapshot.docs.forEach(orderDoc => {
+                  batch.delete(orderDoc.ref);
+                });
+                await batch.commit();
+              }
+            } catch (e) {
+              console.error("Error resetting Firestore tables/orders:", e);
+            }
+
+            broadcast({ type: "TABLES_SYNC", payload: db.prepare("SELECT * FROM tables").all() });
+            broadcast({ type: "ORDERS_SYNC", payload: [] });
+            broadcast({ type: "NOTIFICATION", payload: { message: "Todas as mesas foram resetadas!", type: 'warning' } });
+            
+            await logHistory(userId, username, "RESET_MESAS", "Todas as mesas foram resetadas e pedidos excluídos");
             break;
           }
 
@@ -986,12 +1526,31 @@ const app = express();
             
             broadcast({ type: "ORDER_NEW", payload: newOrders });
             broadcast({ type: "NOTIFICATION", payload: { message: `Novo pedido para a Mesa ${formatTableNumber(tableId)}`, type: 'info' } });
+
+            // Automatic kitchen printing
+            const itemsToPrint = newOrders.map(o => {
+              const itemInfo = db.prepare("SELECT name, print_enabled FROM menu_items WHERE id = ?").get(o.menu_item_id) as any;
+              return { ...o, name: itemInfo?.name, print_enabled: itemInfo?.print_enabled };
+            }).filter(i => i.print_enabled !== 0 && i.print_enabled !== false);
+
+            if (itemsToPrint.length > 0) {
+              const table = db.prepare("SELECT number FROM tables WHERE id = ?").get(tableId) as any;
+              broadcast({
+                type: "PRINT_COMMAND",
+                payload: {
+                  type: 'order_kitchen',
+                  tableNumber: formatTableNumber(table.number),
+                  operator: data.payload.username || 'Sistema',
+                  items: itemsToPrint
+                }
+              });
+            }
             break;
           }
 
           case "ORDER_DELETE":
             const orderToDelete = db.prepare(`
-              SELECT o.*, m.name as item_name, m.type as category, m.category as "group" 
+              SELECT o.*, m.name as item_name, m.type as category, m.category as "group", m.print_enabled
               FROM orders o 
               JOIN menu_items m ON o.menu_item_id = m.id 
               WHERE o.id = ?
@@ -1012,6 +1571,21 @@ const app = express();
                 (!group || group.show_in_history !== 0) ? orderToDelete.group : null,
                 orderToDelete.table_id
               );
+
+              // Print cancellation slip if enabled
+              if (orderToDelete.print_enabled !== 0 && orderToDelete.print_enabled !== false) {
+                const table = db.prepare("SELECT number FROM tables WHERE id = ?").get(orderToDelete.table_id) as any;
+                broadcast({
+                  type: "PRINT_COMMAND",
+                  payload: {
+                    type: 'order_kitchen',
+                    title: 'CANCELAMENTO DE PEDIDO',
+                    tableNumber: formatTableNumber(table.number),
+                    operator: data.payload.username || 'Sistema',
+                    items: [{ ...orderToDelete, name: orderToDelete.item_name }]
+                  }
+                });
+              }
 
               broadcast({ type: "ORDER_DELETED", payload: { orderId: data.payload.orderId, tableId: orderToDelete.table_id } });
               broadcast({ type: "NOTIFICATION", payload: { message: `Pedido excluído da Mesa ${formatTableNumber(orderToDelete.table_id)}`, type: 'warning' } }, ws);
@@ -1551,6 +2125,7 @@ const app = express();
 
     ws.on("close", () => {
       clients.delete(ws);
+      broadcastOnlineUsers();
     });
   });
 
@@ -1684,7 +2259,20 @@ const app = express();
 
     try {
       const result = db.prepare("DELETE FROM users WHERE id = ?").run(req.params.id);
+      
       if (result.changes > 0) {
+        // Force logout if user is online
+        const logoutMsg = JSON.stringify({ 
+          type: "FORCE_LOGOUT", 
+          payload: { message: "Sua conta foi removida pelo administrador." } 
+        });
+        clients.forEach((info, client) => {
+          if (info.userId === req.params.id) {
+            client.send(logoutMsg);
+            setTimeout(() => client.close(), 500);
+          }
+        });
+
         await deleteDoc(doc(firestoreDb, "users", req.params.id)).catch(e => handleFirestoreError(e, OperationType.DELETE, "users"));
         console.log(`User ${req.params.id} deleted`);
         res.json({ success: true });
@@ -1737,6 +2325,11 @@ const app = express();
 
       const { username, password, role, avatar } = req.body;
 
+      let passwordChanged = false;
+      if (password && password !== targetUser.password) {
+        passwordChanged = true;
+      }
+
       if (targetUser && targetUser.username === 'deckserrinha' && role !== 'host') {
         return res.status(403).json({ success: false, message: "O host inicial não pode ser removido do cargo" });
       }
@@ -1775,6 +2368,21 @@ const app = express();
       params.push(req.params.id);
 
       db.prepare(query).run(...params);
+      
+      // Force logout if password or role changed
+      if (passwordChanged || (role !== undefined && role !== targetUser.role)) {
+        const logoutMsg = JSON.stringify({ 
+          type: "FORCE_LOGOUT", 
+          payload: { message: "Suas credenciais foram alteradas. Por favor, faça login novamente." } 
+        });
+        clients.forEach((info, client) => {
+          if (info.userId === req.params.id) {
+            client.send(logoutMsg);
+            setTimeout(() => client.close(), 500);
+          }
+        });
+      }
+
       console.log(`[Server] User ${req.params.id} updated successfully by ${requestingUserId}`);
 
       const updateData: any = {};

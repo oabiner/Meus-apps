@@ -9,6 +9,7 @@ import {
   Edit2, 
   UserPlus, 
   CheckCircle2, 
+  CheckSquare,
   AlertCircle,
   Users,
   DollarSign,
@@ -43,13 +44,31 @@ import {
   ArrowLeft,
   ArrowUp,
   ArrowDown,
-  Printer
+  Printer,
+  CreditCard,
+  Clock,
+  Check,
+  MapPin,
+  Coffee,
+  Beer,
+  Utensils,
+  Waves,
+  Umbrella,
+  Star,
+  Heart,
+  Smartphone,
+  Layers,
+  Battery,
+  Info
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Toaster, toast } from 'react-hot-toast';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { format } from 'date-fns';
+import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import { v4 as uuidv4 } from 'uuid';
 import { 
   User, 
   Table, 
@@ -64,6 +83,287 @@ import { doc, getDocFromServer } from 'firebase/firestore';
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
+
+// --- Helpers ---
+
+const generateHistoryPDF = (events: any[]) => {
+  const doc = new jsPDF();
+  doc.setFontSize(18);
+  doc.text('Relatório de Histórico - Deck Serrinha', 14, 22);
+  doc.setFontSize(11);
+  doc.setTextColor(100);
+  doc.text(`Gerado em: ${format(new Date(), 'dd/MM/yyyy HH:mm:ss')}`, 14, 30);
+
+  const tableData = events.map(e => [
+    format(new Date(e.timestamp), 'dd/MM/yyyy HH:mm'),
+    e.username,
+    e.action,
+    e.details
+  ]);
+
+  autoTable(doc, {
+    startY: 35,
+    head: [['Data', 'Usuário', 'Ação', 'Detalhes']],
+    body: tableData,
+    theme: 'striped',
+    headStyles: { fillColor: [16, 185, 129] },
+  });
+
+  doc.save(`historico_${format(new Date(), 'yyyy-MM-dd_HHmm')}.pdf`);
+  toast.success('PDF do histórico gerado com sucesso!');
+};
+
+export function normalizeMethod(method: string) {
+  if (!method) return 'outros';
+  const m = method.toLowerCase();
+  if (m.includes('debito') || m.includes('débito')) return 'débito';
+  if (m.includes('credito') || m.includes('crédito')) return 'crédito';
+  if (m.includes('pix')) return 'pix';
+  if (m.includes('dinheiro')) return 'dinheiro';
+  return m.replace('_', ' ');
+}
+
+const generateCashierPDF = (session: any, transactions: any[], billing: any) => {
+  const doc = new jsPDF();
+  doc.setFontSize(18);
+  doc.text('Relatório de Fechamento de Caixa', 14, 22);
+  doc.setFontSize(11);
+  doc.setTextColor(100);
+  doc.text(`Abertura: ${format(new Date(session.opened_at), 'dd/MM/yyyy HH:mm')}`, 14, 30);
+  doc.text(`Fechamento: ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 14, 36);
+  doc.text(`Operador: ${session.opened_by_name}`, 14, 42);
+
+  doc.setFontSize(14);
+  doc.setTextColor(0);
+  doc.text('Resumo Financeiro', 14, 55);
+  
+  const summaryData = [
+    ['Saldo Inicial', `R$ ${session.initial_balance.toFixed(2)}`],
+    ['Vendas Totais', `R$ ${billing.total.toFixed(2)}`],
+    ['Sangrias/Saídas', `R$ ${billing.expenses.toFixed(2)}`],
+    ['Saldo Final Esperado', `R$ ${(session.initial_balance + billing.total - billing.expenses).toFixed(2)}`]
+  ];
+
+  autoTable(doc, {
+    startY: 60,
+    body: summaryData,
+    theme: 'plain',
+    styles: { fontSize: 12 }
+  });
+
+  doc.text('Vendas por Forma de Pagamento', 14, (doc as any).lastAutoTable.finalY + 15);
+  
+  const paymentData = Object.entries(billing.byMethod).map(([method, amount]) => [
+    normalizeMethod(method).toUpperCase(),
+    `R$ ${(amount as number).toFixed(2)}`
+  ]);
+
+  autoTable(doc, {
+    startY: (doc as any).lastAutoTable.finalY + 20,
+    head: [['Forma de Pagamento', 'Valor']],
+    body: paymentData,
+    headStyles: { fillColor: [16, 185, 129] },
+  });
+
+  doc.addPage();
+  doc.text('Detalhamento de Transações', 14, 22);
+  
+  const transactionData = transactions.map(t => [
+    format(new Date(t.timestamp), 'HH:mm'),
+    t.description,
+    t.type === 'expense' ? 'SAÍDA' : 'ENTRADA',
+    normalizeMethod(t.method).toUpperCase(),
+    `R$ ${t.amount.toFixed(2)}`
+  ]);
+
+  autoTable(doc, {
+    startY: 30,
+    head: [['Hora', 'Descrição', 'Tipo', 'Método', 'Valor']],
+    body: transactionData,
+    headStyles: { fillColor: [50, 50, 50] },
+    columnStyles: {
+      4: { halign: 'right' }
+    }
+  });
+
+  doc.save(`fechamento_caixa_${format(new Date(), 'yyyy-MM-dd_HHmm')}.pdf`);
+};
+
+const executePrint = (htmlContent: string) => {
+  const root = document.getElementById('root');
+  let container = document.getElementById('print-container');
+  
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'print-container';
+    document.body.appendChild(container);
+  }
+  
+  // Return early if already in the middle of a print to prevent double-hiding capturing "none"
+  if (container.style.display === 'block') {
+    return;
+  }
+  
+  // Inject receipt content
+  container.innerHTML = htmlContent;
+  
+  // Directly hide the main application to prevent "printing the code/UI" on mobile Chrome
+  if (root) {
+    root.style.display = 'none';
+  }
+  
+  // Ensure the container is visible
+  container.style.display = 'block';
+  
+  // Force browser layout update
+  container.offsetHeight;
+
+  const restoreApp = () => {
+    if (root) {
+      // Clear the inline 'none' style so it reverts to its original CSS block/flex
+      root.style.display = ''; 
+    }
+    if (container) {
+      container.style.display = 'none';
+      container.innerHTML = '';
+    }
+  };
+
+  setTimeout(() => {
+    // Attempt standard print
+    window.print();
+    
+    // Listen for afterprint to restore UI, with a fallback timeout
+    let restored = false;
+    let fallbackTimer: NodeJS.Timeout;
+
+    const afterPrintHandler = () => {
+      if (!restored) {
+        restored = true;
+        restoreApp();
+        window.removeEventListener('afterprint', afterPrintHandler);
+        document.removeEventListener('visibilitychange', visibilityHandler);
+        clearTimeout(fallbackTimer);
+      }
+    };
+    
+    const visibilityHandler = () => {
+      if (document.visibilityState === 'visible' && !restored) {
+        afterPrintHandler();
+      }
+    };
+
+    window.addEventListener('afterprint', afterPrintHandler);
+    document.addEventListener('visibilitychange', visibilityHandler);
+    
+    // Ultimate fallback if neither fires (e.g. user cancels very quickly or browser is weird)
+    // Wait a generous amount of time before forcing restore so they have time to see the print dialog.
+    fallbackTimer = setTimeout(afterPrintHandler, 5000);
+  }, 400); // Wait enough time for the DOM layout to flush
+};
+
+export const printKitchenReceipt = (tableNumber: string, operator: string, itemsToPrint: Array<{ name: string, quantity: number, observation?: string }>, title: string = 'COMANDA - COZINHA') => {
+  if (!itemsToPrint || itemsToPrint.length === 0) return;
+
+  const now = new Date();
+  const timeStr = now.toLocaleTimeString();
+  const dateStr = now.toLocaleDateString();
+
+  const html = `
+    <div style="font-family: monospace; width: 80mm; margin: 0 auto; padding: 4mm; color: black; font-size: 14px;">
+      <h2 style="text-align: center; margin: 0 0 10px 0; font-size: 16px; font-weight: bold; text-transform: uppercase; border-bottom: 2px solid black; padding-bottom: 5px;">${title}</h2>
+      <div style="text-align: center; margin-bottom: 10px; font-size: 12px; border-bottom: 1px dashed black; padding-bottom: 5px;">
+        Mesa: <span style="font-size: 18px; text-decoration: underline;">${tableNumber}</span><br/>
+        Data: ${dateStr} ${timeStr}<br/>
+        Op/Garçom: ${operator}
+      </div>
+      ${itemsToPrint.map(item => `
+        <div style="display: flex; justify-content: space-between; margin-bottom: 5px; font-weight: bold;">
+          <span>${item.quantity}x ${item.name}</span>
+        </div>
+        ${item.observation ? `<div style="padding-left: 10px; font-size: 12px; font-style: italic; background: #f9f9f9; padding: 2px 5px; margin: 2px 0; border-left: 3px solid #666;">Obs: ${item.observation}</div>` : ''}
+      `).join('')}
+      <div style="margin-top: 10px; border-top: 1px dashed black; padding-top: 5px; text-align: center; font-size: 10px;">
+        -- Fim da Comanda --
+      </div>
+    </div>
+  `;
+
+  executePrint(html);
+};
+
+export const printTableBill = (table: any, orders: any[], operator: string, title: string = 'CONTA', serviceFeePercentage: number = 10) => {
+  if (!table) return;
+
+  const subtotal = orders.reduce((acc, o) => acc + (o.item_price * o.quantity), 0);
+  const serviceFee = subtotal * (serviceFeePercentage / 100);
+  const total = subtotal + serviceFee;
+  const now = new Date();
+
+  const html = `
+    <div style="font-family: monospace; width: 80mm; margin: 0 auto; padding: 4mm; color: black;">
+      <div style="text-align: center;">
+        <h2 style="margin: 0 0 5px 0; font-size: 16px; text-transform: uppercase; border-bottom: 2px solid black; padding-bottom: 5px; margin-bottom: 10px;">${title}</h2>
+        <div style="border-bottom: 1px dashed black; margin-bottom: 10px; padding-bottom: 5px; font-size: 11px;">
+          Mesa: ${table.number} ${table.customer_name ? `(${table.customer_name})` : ''}<br/>
+          Data: ${now.toLocaleDateString()} ${now.toLocaleTimeString()}<br/>
+          Atendente: ${operator}
+        </div>
+      </div>
+      ${orders.map(o => `
+        <div style="display: flex; justify-content: space-between; margin-bottom: 3px; font-size: 12px;">
+          <span>${o.quantity}x ${o.item_name}</span>
+          <span>R$ ${(o.item_price * o.quantity).toFixed(2)}</span>
+        </div>
+      `).join('')}
+      <div style="border-top: 1px dashed black; margin-top: 10px; padding-top: 5px; font-weight: bold; font-size: 12px; display: flex; justify-content: space-between; margin-bottom: 2px;">
+        <span>SUBTOTAL</span>
+        <span>R$ ${subtotal.toFixed(2)}</span>
+      </div>
+      <div style="font-weight: bold; font-size: 12px; display: flex; justify-content: space-between; margin-bottom: 4px;">
+        <span>TAXA DE SERVIÇO (${serviceFeePercentage}%)</span>
+        <span>R$ ${serviceFee.toFixed(2)}</span>
+      </div>
+      <div style="border-top: 2px solid black; margin-top: 5px; padding-top: 5px; font-weight: bold; font-size: 15px; display: flex; justify-content: space-between; margin-bottom: 3px;">
+        <span>TOTAL GERAL</span>
+        <span>R$ ${total.toFixed(2)}</span>
+      </div>
+      <div style="margin-top: 15px; text-align: center; font-size: 10px; border-top: 1px solid #eee; padding-top: 5px;">
+        Obrigado pela preferência!<br/>
+        Volte Sempre!
+      </div>
+    </div>
+  `;
+
+  executePrint(html);
+};
+
+export const printFinancialSlip = (title: string, data: any, operator: string) => {
+  const now = new Date();
+
+  const html = `
+    <div style="font-family: monospace; width: 80mm; margin: 0 auto; padding: 4mm; color: black;">
+      <h2 style="text-align: center; border-bottom: 1px solid black; padding-bottom: 5px; font-size: 16px;">${title.toUpperCase()}</h2>
+      <div style="display: flex; justify-content: space-between; margin: 5px 0; font-size: 13px;"><span>Data/Hora:</span> <span>${now.toLocaleDateString()} ${now.toLocaleTimeString()}</span></div>
+      <div style="display: flex; justify-content: space-between; margin: 5px 0; font-size: 13px;"><span>Operador:</span> <span>${operator}</span></div>
+      <hr style="margin: 10px 0;"/>
+      ${Object.entries(data).map(([key, val]: [string, any]) => {
+        if (typeof val === 'object') {
+           return `
+             <div style="display: flex; justify-content: space-between; margin: 5px 0; font-size: 13px; font-weight: bold;"><span>${key.toUpperCase()}</span></div>
+             ${Object.entries(val).map(([m, low]) => `
+               <div style="display: flex; justify-content: space-between; margin: 5px 0; font-size: 12px; opacity: 0.8; padding-left: 10px;"><span>${normalizeMethod(m).toUpperCase()}</span> <span>R$ ${Number(low).toFixed(2)}</span></div>
+             `).join('')}
+           `;
+        }
+        return `<div style="display: flex; justify-content: space-between; margin: 5px 0; font-size: 13px; font-weight: bold;"><span>${key.toUpperCase()}:</span> <span>R$ ${Number(val).toFixed(2)}</span></div>`;
+      }).join('')}
+      <div style="margin-top: 20px; border-top: 1px dashed black; padding-top: 10px; text-align: center; font-size: 10px;">Documento Interno</div>
+    </div>
+  `;
+
+  executePrint(html);
+};
 
 function formatTableNumber(num: number | string) {
   const n = typeof num === 'string' ? parseInt(num) : num;
@@ -139,13 +439,51 @@ const Modal = ({ isOpen, onClose, title, children, zIndex = 50, maxWidth = 'max-
   </AnimatePresence>
 );
 
-const TableCard = ({ table, onClick }: any) => {
+const icons = [
+  { name: 'MapPin', icon: <MapPin className="h-4 w-4" /> },
+  { name: 'Home', icon: <Home className="h-4 w-4" /> },
+  { name: 'Coffee', icon: <Coffee className="h-4 w-4" /> },
+  { name: 'Beer', icon: <Beer className="h-4 w-4" /> },
+  { name: 'Utensils', icon: <Utensils className="h-4 w-4" /> },
+  { name: 'Trees', icon: <Trees className="h-4 w-4" /> },
+  { name: 'Waves', icon: <Waves className="h-4 w-4" /> },
+  { name: 'Sun', icon: <Sun className="h-4 w-4" /> },
+  { name: 'Umbrella', icon: <Umbrella className="h-4 w-4" /> },
+  { name: 'Star', icon: <Star className="h-4 w-4" /> },
+  { name: 'Heart', icon: <Heart className="h-4 w-4" /> },
+];
+
+const getIcon = (iconName: string) => {
+  const found = icons.find(i => i.name === iconName);
+  return found ? found.icon : <MapPin className="h-4 w-4" />;
+};
+
+const TableCard = ({ table, onClick, settings }: any) => {
+  const tableTypes = JSON.parse(settings.table_types || '[{"id":"salao","name":"Salão","color":"#10b981"},{"id":"gramado","name":"Gramado","color":"#3b82f6"}]');
+  const billRequestedColor = settings.color_bill_requested || '#f59e0b';
+  
+  const currentType = tableTypes.find((t: any) => t.id === table.type) || tableTypes[0];
+  
   const statusColors = {
     free: 'bg-white border-zinc-200 hover:border-emerald-200 hover:bg-emerald-50/30 dark:bg-zinc-800 dark:border-zinc-700 dark:hover:border-emerald-700 dark:hover:bg-emerald-900/20',
-    open: table.type === 'gramado' 
-      ? 'bg-emerald-100 border-emerald-300 text-emerald-900 dark:bg-emerald-900/50 dark:border-emerald-700 dark:text-emerald-50'
-      : 'bg-blue-50 border-blue-200 text-blue-900 dark:bg-blue-900/30 dark:border-blue-800 dark:text-blue-100',
-    bill_requested: 'bg-amber-100 border-amber-200 text-amber-900 dark:bg-amber-900/40 dark:border-amber-800 dark:text-amber-200 shadow-sm font-bold',
+    open: '', // Handled by style prop below
+    bill_requested: '', // Handled by style prop below
+  };
+
+  const getStatusStyle = () => {
+    if (table.status === 'free') return {};
+    if (table.status === 'bill_requested') {
+      return { 
+        backgroundColor: `${billRequestedColor}20`, 
+        borderColor: billRequestedColor,
+        color: billRequestedColor 
+      };
+    }
+    return { 
+      backgroundColor: `${currentType.color}20`, 
+      borderColor: currentType.color,
+      color: currentType.color 
+    };
   };
 
   return (
@@ -153,38 +491,42 @@ const TableCard = ({ table, onClick }: any) => {
       whileHover={{ scale: 1.02 }}
       whileTap={{ scale: 0.98 }}
       onClick={onClick}
+      style={getStatusStyle()}
       className={cn(
         'flex flex-col items-center justify-center rounded-xl border-2 p-4 transition-all shadow-sm relative overflow-hidden',
-        statusColors[table.status as keyof typeof statusColors]
+        table.status === 'free' ? statusColors.free : ''
       )}
     >
-          {table.status === 'open' && (
-        <div className={cn(
-          "absolute top-0 right-0 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-tighter rounded-bl-lg",
-          table.type === 'gramado' ? "bg-emerald-600 text-white" : "bg-blue-600 text-white"
-        )}>
-          {table.type === 'gramado' ? 'Gramado' : 'Salão'}
+      {table.status === 'open' && (
+        <div 
+          className="absolute top-0 right-0 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-tighter rounded-bl-lg text-white"
+          style={{ backgroundColor: currentType.color }}
+        >
+          {currentType.name}
         </div>
       )}
       {table.status === 'bill_requested' && (
-        <div className="absolute top-0 right-0 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-tighter rounded-bl-lg bg-amber-600 text-white">
+        <div 
+          className="absolute top-0 right-0 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-tighter rounded-bl-lg text-white"
+          style={{ backgroundColor: billRequestedColor }}
+        >
           Conta
         </div>
       )}
       <span className={cn(
         "text-2xl font-bold",
-        table.status === 'bill_requested' ? "text-amber-950 dark:text-amber-100" : "dark:text-zinc-100"
+        table.status === 'free' ? "dark:text-zinc-100" : ""
       )}>{formatTableNumber(table.number)}</span>
       <span className={cn(
         "mt-1 text-[10px] font-medium uppercase tracking-wider opacity-60",
-        table.status === 'bill_requested' ? "text-amber-900/70 dark:text-amber-200/70" : "dark:text-zinc-400"
+        table.status === 'free' ? "dark:text-zinc-400" : ""
       )}>
         {table.status === 'free' ? 'Livre' : table.status === 'open' ? 'Aberta' : 'Conta'}
       </span>
       {table.customer_name && (
         <span className={cn(
           "mt-2 w-full truncate text-center text-sm font-bold",
-          table.status === 'bill_requested' ? "text-amber-950 dark:text-amber-100" : "text-zinc-900 dark:text-zinc-100"
+          table.status === 'free' ? "text-zinc-900 dark:text-zinc-100" : ""
         )}>{table.customer_name}</span>
       )}
     </motion.button>
@@ -192,6 +534,564 @@ const TableCard = ({ table, onClick }: any) => {
 };
 
 // --- Main App ---
+
+const CloseTableModalContent = ({ selectedTable, currentOrders, settings, user, sendWS, hasPermission, onClose }: any) => {
+  const [localServiceFee, setLocalServiceFee] = useState(parseFloat(settings.service_fee || '10'));
+  const [discount, setDiscount] = useState(0);
+  const [paymentMethods, setPaymentMethods] = useState<Record<string, number>>({});
+  const [showDiscountInput, setShowDiscountInput] = useState(false);
+
+  const subtotal = currentOrders.reduce((acc: number, o: any) => acc + ((o.item_price as number) || 0) * o.quantity, 0);
+  const service = (subtotal as number) * (localServiceFee / 100);
+  const total = (subtotal as number) + (service as number) - (discount as number);
+
+  const handleMethodToggle = (method: string) => {
+    setPaymentMethods(prev => {
+      const next = { ...prev };
+      if (next[method] !== undefined) {
+        delete next[method];
+        // Re-split remaining total among remaining methods
+        const remainingMethods = Object.keys(next);
+        if (remainingMethods.length > 0) {
+          const splitAmount = total / remainingMethods.length;
+          remainingMethods.forEach(m => {
+            next[m] = splitAmount;
+          });
+        }
+      } else {
+        const methods = [...Object.keys(next), method];
+        const splitAmount = total / methods.length;
+        methods.forEach(m => {
+          next[m] = splitAmount;
+        });
+      }
+      return next;
+    });
+  };
+
+  const handleAmountChange = (method: string, amount: number) => {
+    setPaymentMethods(prev => {
+      const next = { ...prev, [method]: amount };
+      const otherMethods = Object.keys(next).filter(m => m !== method);
+      
+      if (otherMethods.length > 0) {
+        const remainingTotal = total - amount;
+        const splitAmount = Math.max(0, remainingTotal / otherMethods.length);
+        otherMethods.forEach(m => {
+          next[m] = splitAmount;
+        });
+      }
+      return next;
+    });
+  };
+
+  const totalPaid = Object.values(paymentMethods).reduce((a, b) => (a as number) + (b as number), 0);
+  const isTotalValid = Math.abs((totalPaid as number) - (total as number)) < 0.01;
+
+  return (
+    <form onSubmit={(e) => {
+      e.preventDefault();
+      if (!isTotalValid) return toast.error(`O valor total pago (R$ ${(totalPaid as number).toFixed(2)}) deve ser igual ao total da conta (R$ ${(total as number).toFixed(2)})`);
+      sendWS('TABLE_CLOSE', { 
+        tableId: selectedTable?.id, 
+        userId: user?.id, 
+        username: user?.username, 
+        paymentMethods: Object.keys(paymentMethods),
+        paymentDetails: paymentMethods,
+        subtotal,
+        serviceFee: localServiceFee,
+        discount,
+        total
+      });
+      onClose();
+    }} className="space-y-4">
+      <div className="rounded-xl bg-emerald-50 p-4 border border-emerald-100 dark:bg-emerald-900/20 dark:border-emerald-800 space-y-3">
+        <div className="flex justify-between text-sm text-emerald-700 dark:text-emerald-300">
+          <span>Subtotal:</span>
+          <span className="font-bold">R$ {(subtotal as number).toFixed(2)}</span>
+        </div>
+        
+        <div className="flex items-center justify-between text-sm text-emerald-700 dark:text-emerald-300">
+          <div className="flex items-center gap-2">
+            <span>Serviço (%):</span>
+            <input 
+              type="number" 
+              value={localServiceFee === 0 ? '' : localServiceFee} 
+              placeholder="0"
+              disabled={!hasPermission('remove_service_fee') && localServiceFee === 0}
+              onChange={(e) => {
+                const val = e.target.value === '' ? 0 : parseFloat(e.target.value);
+                if (val < localServiceFee && !hasPermission('remove_service_fee')) {
+                  toast.error('Sem permissão para remover ou diminuir taxa de serviço');
+                  return;
+                }
+                setLocalServiceFee(val);
+              }}
+              className="w-12 rounded border border-emerald-200 bg-white px-1 py-0.5 text-xs focus:ring-emerald-500 dark:bg-zinc-800 dark:border-emerald-800 disabled:opacity-50"
+            />
+          </div>
+          <span className="font-bold">R$ {(service as number).toFixed(2)}</span>
+        </div>
+
+        <div className="flex items-center justify-between text-sm text-rose-700 dark:text-rose-300">
+          <div className="flex items-center gap-2">
+            <span>Desconto:</span>
+            {showDiscountInput ? (
+              <input 
+                type="number" 
+                autoFocus
+                value={discount === 0 ? '' : discount} 
+                placeholder="0"
+                onChange={(e) => setDiscount(e.target.value === '' ? 0 : parseFloat(e.target.value))}
+                className="w-20 rounded border border-rose-200 bg-white px-1 py-0.5 text-xs focus:ring-rose-500 dark:bg-zinc-800 dark:border-rose-800"
+              />
+            ) : (
+              <button 
+                type="button"
+                onClick={() => {
+                  if (hasPermission('apply_discount')) {
+                    setShowDiscountInput(true);
+                  } else {
+                    toast.error('Sem permissão para dar desconto');
+                  }
+                }}
+                className="text-rose-600 hover:underline"
+              >
+                Aplicar desconto
+              </button>
+            )}
+          </div>
+          <span className="font-bold">R$ {(discount as number).toFixed(2)}</span>
+        </div>
+
+        <div className="pt-3 border-t border-emerald-200 dark:border-emerald-800 flex justify-between text-lg font-bold text-emerald-900 dark:text-emerald-50">
+          <span>Total:</span>
+          <span>R$ {(total as number).toFixed(2)}</span>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Formas de Pagamento</label>
+        <div className="grid grid-cols-2 gap-2">
+          {['dinheiro', 'pix', 'cartao_debito', 'cartao_credito'].map((method) => (
+            <button
+              key={method}
+              type="button"
+              onClick={() => handleMethodToggle(method)}
+              className={cn(
+                "px-3 py-2 rounded-lg border text-sm font-medium transition-all",
+                paymentMethods[method] !== undefined
+                  ? "bg-emerald-600 border-emerald-600 text-white"
+                  : "bg-white border-zinc-200 text-zinc-600 hover:border-emerald-200 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-400"
+              )}
+            >
+              {method.replace('_', ' ').toUpperCase()}
+            </button>
+          ))}
+        </div>
+
+        {Object.keys(paymentMethods).length > 0 && (
+          <div className="mt-4 space-y-3">
+            {Object.keys(paymentMethods).map((method) => (
+              <div key={method} className="flex items-center gap-3">
+                <span className="text-xs font-bold text-zinc-500 w-24 uppercase">{method.replace('_', ' ')}:</span>
+                <div className="relative flex-1">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 text-sm">R$</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={paymentMethods[method] === 0 ? '' : paymentMethods[method]}
+                    placeholder="0.00"
+                    onChange={(e) => handleAmountChange(method, e.target.value === '' ? 0 : parseFloat(e.target.value))}
+                    className="w-full pl-9 pr-3 py-2 rounded-lg border border-zinc-200 text-sm focus:ring-emerald-500 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100"
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="pt-4 flex flex-col gap-3">
+        <div className={cn(
+          "text-center text-sm font-bold p-2 rounded-lg",
+          isTotalValid ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-900/20" : "text-rose-600 bg-rose-50 dark:bg-rose-900/20"
+        )}>
+          Pago: R$ {(totalPaid as number).toFixed(2)} / R$ {(total as number).toFixed(2)}
+        </div>
+        <Button type="submit" className="w-full py-6 text-lg">
+          Finalizar Pagamento
+        </Button>
+        <Button variant="outline" type="button" onClick={onClose} className="w-full">
+          Voltar
+        </Button>
+      </div>
+    </form>
+  );
+};
+
+function TasksTab({ tasks, users, currentUser, sendWS, hasPermission }: any) {
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const canManage = hasPermission('manage_tasks');
+
+  const filteredTasks = tasks.filter((t: any) => {
+    if (canManage) return true;
+    const assignedIds = JSON.parse(t.assigned_to || '[]');
+    return assignedIds.includes(currentUser.id);
+  });
+
+  return (
+    <div className="space-y-6 animate-in fade-in duration-500">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold text-zinc-900 dark:text-zinc-100">Tarefas</h2>
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">Gerencie suas atividades diárias</p>
+        </div>
+        {canManage && (
+          <Button onClick={() => setIsAddModalOpen(true)} className="gap-2">
+            <Plus className="h-4 w-4" /> Nova Tarefa
+          </Button>
+        )}
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {filteredTasks.length === 0 ? (
+          <div className="col-span-full py-12 text-center space-y-3">
+            <div className="mx-auto w-12 h-12 rounded-full bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center">
+              <CheckSquare className="h-6 w-6 text-zinc-400" />
+            </div>
+            <p className="text-zinc-500 dark:text-zinc-400">Nenhuma tarefa encontrada</p>
+          </div>
+        ) : (
+          filteredTasks.map((task: any) => (
+            <motion.div
+              layout
+              key={task.id}
+              className={cn(
+                "group relative p-5 rounded-2xl border transition-all duration-300",
+                task.status === 'completed'
+                  ? "bg-zinc-50 border-zinc-200 dark:bg-zinc-800/30 dark:border-zinc-800"
+                  : "bg-white border-zinc-200 shadow-sm hover:shadow-md dark:bg-zinc-900 dark:border-zinc-800"
+              )}
+            >
+              <div className="flex justify-between items-start mb-3">
+                <h3 className={cn(
+                  "font-bold transition-all",
+                  task.status === 'completed' ? "text-zinc-400 line-through" : "text-zinc-900 dark:text-zinc-100"
+                )}>
+                  {task.title}
+                </h3>
+                {canManage && (
+                  <button 
+                    onClick={() => sendWS('TASK_DELETE', { id: task.id })}
+                    className="opacity-0 group-hover:opacity-100 p-1.5 text-zinc-400 hover:text-rose-500 transition-all"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+              <p className={cn(
+                "text-sm mb-4 line-clamp-2",
+                task.status === 'completed' ? "text-zinc-400" : "text-zinc-600 dark:text-zinc-400"
+              )}>
+                {task.description}
+              </p>
+              
+              <div className="flex items-center justify-between pt-4 border-t border-zinc-100 dark:border-zinc-800">
+                <div className="flex -space-x-2">
+                  {JSON.parse(task.assigned_to || '[]').map((uid: string) => {
+                    const u = users.find((user: any) => user.id === uid);
+                    return (
+                      <div 
+                        key={uid}
+                        className="h-7 w-7 rounded-full border-2 border-white bg-zinc-100 flex items-center justify-center text-[10px] font-bold dark:border-zinc-900 dark:bg-zinc-800"
+                        title={u?.username}
+                      >
+                        {u?.avatar || u?.username?.charAt(0).toUpperCase()}
+                      </div>
+                    );
+                  })}
+                </div>
+                
+                <button
+                  onClick={() => sendWS('TASK_UPDATE', { id: task.id, status: task.status === 'completed' ? 'pending' : 'completed' })}
+                  className={cn(
+                    "flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-all",
+                    task.status === 'completed'
+                      ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
+                      : "bg-zinc-100 text-zinc-600 hover:bg-emerald-500 hover:text-white dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-emerald-600"
+                  )}
+                >
+                  {task.status === 'completed' ? (
+                    <><CheckCircle2 className="h-3.5 w-3.5" /> Concluída</>
+                  ) : (
+                    'Marcar como feita'
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          ))
+        )}
+      </div>
+
+      <Modal isOpen={isAddModalOpen} onClose={() => setIsAddModalOpen(false)} title="Nova Tarefa">
+        <form onSubmit={(e) => {
+          e.preventDefault();
+          const formData = new FormData(e.currentTarget);
+          const assignedTo = Array.from(formData.getAll('assignedTo'));
+          sendWS('TASK_ADD', {
+            title: formData.get('title'),
+            description: formData.get('description'),
+            assignedTo,
+            userId: currentUser.id,
+            username: currentUser.username
+          });
+          setIsAddModalOpen(false);
+        }} className="space-y-4">
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Título</label>
+            <Input name="title" placeholder="O que precisa ser feito?" required />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Descrição</label>
+            <textarea 
+              name="description" 
+              className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100 min-h-[100px]"
+              placeholder="Detalhes da tarefa..."
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Atribuir para</label>
+            <div className="grid grid-cols-2 gap-2 max-h-[200px] overflow-y-auto p-1">
+              {users.map((u: any) => (
+                <label key={u.id} className="flex items-center gap-2 p-2 rounded-lg border border-zinc-100 dark:border-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 cursor-pointer">
+                  <input type="checkbox" name="assignedTo" value={u.id} className="rounded border-zinc-300 text-emerald-600" />
+                  <span className="text-sm dark:text-zinc-300">{u.username}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+          <Button type="submit" className="w-full">Criar Tarefa</Button>
+        </form>
+      </Modal>
+    </div>
+  );
+}
+
+function TableManagement({ tables, sendWS, settings }: any) {
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [editingTable, setEditingTable] = useState<any>(null);
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
+
+  const tableTypes = JSON.parse(settings.table_types || '[{"id":"salao","name":"Salão","color":"#10b981"},{"id":"gramado","name":"Gramado","color":"#3b82f6"}]');
+  const billRequestedColor = settings.color_bill_requested || '#f59e0b';
+
+  const [editingType, setEditingType] = useState<any>(null);
+  const [newTypeName, setNewTypeName] = useState('');
+  const [newTypeColor, setNewTypeColor] = useState('#10b981');
+  const [newTypeIcon, setNewTypeIcon] = useState('MapPin');
+
+  const handleSaveTypes = (newTypes: any[]) => {
+    sendWS('SETTINGS_UPDATE', { table_types: JSON.stringify(newTypes) });
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h3 className="text-lg font-bold dark:text-zinc-100">Gerenciar Mesas</h3>
+        <div className="flex gap-2">
+          <Button onClick={() => setIsConfigModalOpen(true)} variant="outline" size="sm" className="gap-2">
+            <Settings className="h-4 w-4" /> Áreas e Cores
+          </Button>
+          <Button onClick={() => setIsAddModalOpen(true)} size="sm" className="gap-2">
+            <Plus className="h-4 w-4" /> Nova Mesa
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {tables.map((table: any) => {
+          const typeInfo = tableTypes.find((t: any) => t.id === table.type) || tableTypes[0];
+          return (
+            <div key={table.id} className="p-4 rounded-2xl border border-zinc-200 bg-white dark:bg-zinc-900 dark:border-zinc-800 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div 
+                  className="h-10 w-10 rounded-xl flex items-center justify-center font-bold text-zinc-500 bg-zinc-100 border border-zinc-200 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-400 shadow-sm"
+                >
+                  {table.number}
+                </div>
+                <div>
+                  <p className="font-bold dark:text-zinc-200">Mesa {table.number}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-1">
+                <button 
+                  onClick={() => setEditingTable(table)}
+                  className="p-2 text-zinc-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 rounded-lg transition-colors"
+                >
+                  <Edit2 className="h-4 w-4" />
+                </button>
+                <button 
+                  onClick={() => {
+                    if (confirm(`Deseja realmente excluir a mesa ${table.number}?`)) {
+                      sendWS('TABLE_DELETE_PERMANENT', { tableId: table.id });
+                    }
+                  }}
+                  className="p-2 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/30 rounded-lg transition-colors"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <Modal isOpen={isAddModalOpen || !!editingTable} onClose={() => { setIsAddModalOpen(false); setEditingTable(null); }} title={editingTable ? "Editar Mesa" : "Nova Mesa"}>
+        <form onSubmit={(e) => {
+          e.preventDefault();
+          const formData = new FormData(e.currentTarget);
+          const data = {
+            number: parseInt(formData.get('number') as string),
+            type: editingTable ? editingTable.type : formData.get('type')
+          };
+          if (editingTable) {
+            sendWS('TABLE_EDIT_PERMANENT', { tableId: editingTable.id, ...data });
+          } else {
+            sendWS('TABLE_ADD_PERMANENT', data);
+          }
+          setIsAddModalOpen(false);
+          setEditingTable(null);
+        }} className="space-y-4">
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Número da Mesa</label>
+            <Input name="number" type="number" defaultValue={editingTable?.number} required />
+          </div>
+          {!editingTable && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Tipo/Área</label>
+              <select name="type" defaultValue={tableTypes[0]?.id} className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100">
+                {tableTypes.map((t: any) => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          <Button type="submit" className="w-full">{editingTable ? "Salvar Alterações" : "Criar Mesa"}</Button>
+        </form>
+      </Modal>
+
+      <Modal isOpen={isConfigModalOpen} onClose={() => setIsConfigModalOpen(false)} title="Configurar Áreas e Cores">
+        <div className="space-y-6">
+          <div className="space-y-4">
+            <h4 className="text-sm font-bold uppercase text-zinc-400">Áreas de Atendimento</h4>
+            <div className="space-y-2">
+              {tableTypes.map((t: any) => (
+                <div key={t.id} className="flex items-center justify-between p-3 rounded-xl border border-zinc-100 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-800/50">
+                  <div className="flex items-center gap-3">
+                    <div className="h-10 w-10 rounded-xl border border-white shadow-sm flex items-center justify-center text-white" style={{ backgroundColor: t.color }}>
+                      {getIcon(t.icon || 'MapPin')}
+                    </div>
+                    <span className="font-medium dark:text-zinc-200">{t.name}</span>
+                  </div>
+                  <div className="flex gap-1">
+                    <button onClick={() => {
+                      setEditingType(t);
+                      setNewTypeName(t.name);
+                      setNewTypeColor(t.color);
+                      setNewTypeIcon(t.icon || 'MapPin');
+                    }} className="p-1.5 text-zinc-400 hover:text-emerald-600">
+                      <Edit2 className="h-4 w-4" />
+                    </button>
+                    {tableTypes.length > 1 && (
+                      <button onClick={() => {
+                        if (confirm(`Excluir área "${t.name}"? Mesas vinculadas precisarão ser reatribuídas.`)) {
+                          handleSaveTypes(tableTypes.filter((type: any) => type.id !== t.id));
+                        }
+                      }} className="p-1.5 text-zinc-400 hover:text-rose-600">
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="p-4 rounded-xl border-2 border-dashed border-zinc-200 dark:border-zinc-800 space-y-3">
+              <h5 className="text-xs font-bold uppercase text-zinc-500">{editingType ? 'Editar Área' : 'Nova Área'}</h5>
+              <div className="grid gap-3">
+                <Input value={newTypeName} onChange={(e: any) => setNewTypeName(e.target.value)} placeholder="Nome da área (ex: Deck)" />
+                <div className="flex items-center gap-3">
+                  <input type="color" value={newTypeColor} onChange={(e) => setNewTypeColor(e.target.value)} className="h-10 w-20 rounded border border-zinc-200 dark:border-zinc-700 bg-transparent cursor-pointer" />
+                  <span className="text-xs text-zinc-500">Cor da área</span>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase text-zinc-500">Ícone</label>
+                  <div className="grid grid-cols-6 gap-2">
+                    {icons.map(i => (
+                      <button
+                        key={i.name}
+                        onClick={() => setNewTypeIcon(i.name)}
+                        className={cn(
+                          "h-10 w-10 rounded-xl flex items-center justify-center transition-all",
+                          newTypeIcon === i.name 
+                            ? "bg-emerald-500 text-white shadow-lg" 
+                            : "bg-zinc-100 text-zinc-500 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400"
+                        )}
+                      >
+                        {i.icon}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button onClick={() => {
+                    if (!newTypeName.trim()) return;
+                    if (editingType) {
+                      handleSaveTypes(tableTypes.map((t: any) => t.id === editingType.id ? { ...t, name: newTypeName, color: newTypeColor, icon: newTypeIcon } : t));
+                    } else {
+                      handleSaveTypes([...tableTypes, { id: uuidv4(), name: newTypeName, color: newTypeColor, icon: newTypeIcon }]);
+                    }
+                    setEditingType(null);
+                    setNewTypeName('');
+                    setNewTypeColor('#10b981');
+                    setNewTypeIcon('MapPin');
+                  }} className="flex-1" size="sm">
+                    {editingType ? 'Salvar' : 'Adicionar'}
+                  </Button>
+                  {editingType && (
+                    <Button variant="outline" onClick={() => {
+                      setEditingType(null);
+                      setNewTypeName('');
+                      setNewTypeColor('#10b981');
+                      setNewTypeIcon('MapPin');
+                    }} size="sm">Cancelar</Button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-3 pt-4 border-t border-zinc-100 dark:border-zinc-800">
+            <h4 className="text-sm font-bold uppercase text-zinc-400">Cores de Status</h4>
+            <div className="flex items-center justify-between p-3 rounded-xl border border-zinc-100 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-800/50">
+              <div className="flex items-center gap-3">
+                <div className="h-6 w-6 rounded-full border border-white shadow-sm" style={{ backgroundColor: billRequestedColor }} />
+                <span className="font-medium dark:text-zinc-200">Solicitação de Conta</span>
+              </div>
+              <input 
+                type="color" 
+                value={billRequestedColor} 
+                onChange={(e) => sendWS('SETTINGS_UPDATE', { color_bill_requested: e.target.value })} 
+                className="h-8 w-12 rounded border border-zinc-200 dark:border-zinc-700 bg-transparent cursor-pointer" 
+              />
+            </div>
+          </div>
+        </div>
+      </Modal>
+    </div>
+  );
+}
 
 export default function App() {
   const [user, setUser] = useState<User | null>(() => {
@@ -230,7 +1130,7 @@ export default function App() {
   }, [isLoggedIn, user]);
 
   const [transferRequests, setTransferRequests] = useState<any[]>([]);
-  const [activeTab, setActiveTab] = useState<'mesas' | 'cardapio' | 'historico' | 'config' | 'gestao'>('mesas');
+  const [activeTab, setActiveTab] = useState<'mesas' | 'cardapio' | 'historico' | 'config' | 'gestao' | 'tarefas'>('mesas');
   
   // State from server
   const [tables, setTables] = useState<Table[]>([]);
@@ -240,7 +1140,14 @@ export default function App() {
   const [historyEvents, setHistoryEvents] = useState<any[]>([]);
   const [allOrders, setAllOrders] = useState<any[]>([]);
   const [users, setUsers] = useState<User[]>([]);
+  const [onlineUsers, setOnlineUsers] = useState<{ userId: string; username: string; role: string }[]>([]);
+  const [cashierStatus, setCashierStatus] = useState<{ status: 'open' | 'closed'; sessionId?: string; initialBalance?: number }>({ status: 'closed' });
+  const [cashierTransactions, setCashierTransactions] = useState<any[]>([]);
   const [settings, setSettings] = useState<any>({ service_fee: '10' });
+  const settingsRef = useRef(settings);
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
   const [darkMode, setDarkMode] = useState(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('theme') === 'dark';
@@ -343,8 +1250,25 @@ export default function App() {
     return true;
   });
 
+  const [managePrinterHub, setManagePrinterHub] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('managePrinterHub');
+      return saved !== null ? JSON.parse(saved) : false;
+    }
+    return false;
+  });
+
+  const [printerHubUserRestriction, setPrinterHubUserRestriction] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('printerHubUserRestriction') || 'all';
+    }
+    return 'all';
+  });
+
   const notificationsEnabledRef = useRef(notificationsEnabled);
   const soundEnabledRef = useRef(soundEnabled);
+  const managePrinterHubRef = useRef(managePrinterHub);
+  const printerHubUserRestrictionRef = useRef(printerHubUserRestriction);
 
   useEffect(() => {
     notificationsEnabledRef.current = notificationsEnabled;
@@ -355,9 +1279,21 @@ export default function App() {
     soundEnabledRef.current = soundEnabled;
     localStorage.setItem('soundEnabled', JSON.stringify(soundEnabled));
   }, [soundEnabled]);
+
+  useEffect(() => {
+    managePrinterHubRef.current = managePrinterHub;
+    localStorage.setItem('managePrinterHub', JSON.stringify(managePrinterHub));
+  }, [managePrinterHub]);
+
+  useEffect(() => {
+    printerHubUserRestrictionRef.current = printerHubUserRestriction;
+    localStorage.setItem('printerHubUserRestriction', printerHubUserRestriction);
+  }, [printerHubUserRestriction]);
   
   // UI State
   const [selectedTable, setSelectedTable] = useState<Table | null>(null);
+  const [accountsPayable, setAccountsPayable] = useState<any[]>([]);
+  const [tasks, setTasks] = useState<any[]>([]);
   const selectedTableRef = useRef(selectedTable);
   useEffect(() => {
     selectedTableRef.current = selectedTable;
@@ -463,6 +1399,17 @@ export default function App() {
       }
       // Request full sync on connect
       ws.send(JSON.stringify({ type: 'FULL_SYNC' }));
+      
+      if (userRef.current) {
+        ws.send(JSON.stringify({ 
+          type: 'USER_IDENTIFY', 
+          payload: { 
+            userId: userRef.current.id, 
+            username: userRef.current.username, 
+            role: userRef.current.role 
+          } 
+        }));
+      }
     };
 
     ws.onmessage = (event) => {
@@ -517,6 +1464,55 @@ export default function App() {
         case 'ORDER_DELETED':
           setAllOrders(prev => prev.filter(o => o.id !== data.payload.orderId));
           break;
+        case 'PRINT_COMMAND':
+          if (managePrinterHubRef.current) {
+            // Check user restriction
+            const restriction = printerHubUserRestrictionRef.current;
+            if (restriction !== 'all' && userRef.current?.username !== restriction) {
+              console.log('Printing ignored: this device is restricted to user', restriction);
+              break;
+            }
+
+            console.log('Received print command:', data.payload);
+            const { type, payload } = data;
+            
+            // Define which types need manual confirmation
+            const needsManualConfirmation = ['cashier_open', 'cashier_close', 'table_close'].includes(data.payload.type);
+
+            if (needsManualConfirmation) {
+                // Show a manual confirmation toast or modal
+                toast((t) => (
+                  <div className="flex flex-col gap-2">
+                    <p className="font-bold flex items-center gap-2">
+                      <Printer className="h-4 w-4" /> Imprimir {data.payload.title || 'Documento'}?
+                    </p>
+                    <div className="flex gap-2">
+                      <Button size="sm" onClick={() => {
+                        if (['table_bill', 'table_close'].includes(data.payload.type)) {
+                          const fee = parseFloat(settingsRef.current?.service_fee || '10');
+                          printTableBill(data.payload.table, data.payload.orders, data.payload.operator, data.payload.title || 'CONTA', fee);
+                        } else if (['cashier_slip', 'cashier_open', 'cashier_close'].includes(data.payload.type)) {
+                          printFinancialSlip(data.payload.title, data.payload.data, data.payload.operator);
+                        }
+                        toast.dismiss(t.id);
+                      }}>Imprimir</Button>
+                      <Button size="sm" variant="ghost" onClick={() => toast.dismiss(t.id)}>Ignorar</Button>
+                    </div>
+                  </div>
+                ), { duration: 15000, position: 'bottom-right' });
+            } else {
+                // "Direct" printing (no interaction needed in the app, browser dialog still appears as intended)
+                if (data.payload.type === 'order_kitchen') {
+                  printKitchenReceipt(data.payload.tableNumber, data.payload.operator, data.payload.items, data.payload.title || 'COMANDA - COZINHA');
+                } else if (['table_bill', 'table_close'].includes(data.payload.type)) {
+                  const fee = parseFloat(settingsRef.current?.service_fee || '10');
+                  printTableBill(data.payload.table, data.payload.orders, data.payload.operator, data.payload.title || 'CONTA', fee);
+                } else if (['cashier_slip', 'cashier_open', 'cashier_close'].includes(data.payload.type)) {
+                  printFinancialSlip(data.payload.title, data.payload.data, data.payload.operator);
+                }
+            }
+          }
+          break;
         case 'NOTIFICATION':
           if (notificationsEnabledRef.current) {
             const toastId = `notif-${data.payload.message}`;
@@ -561,6 +1557,24 @@ export default function App() {
             localStorage.removeItem('user');
           }
           break;
+        case 'ONLINE_USERS':
+          setOnlineUsers(data.payload);
+          break;
+        case 'CASHIER_STATUS':
+          setCashierStatus(data.payload);
+          break;
+        case 'CASHIER_TRANSACTIONS':
+          setCashierTransactions(data.payload);
+          break;
+        case 'ACCOUNTS_PAYABLE_SYNC':
+          setAccountsPayable(data.payload);
+          break;
+        case 'TASKS_SYNC':
+          setTasks(data.payload);
+          break;
+        case 'HISTORY_ALL_DATA':
+          generateHistoryPDF(data.payload);
+          break;
       }
     };
 
@@ -572,8 +1586,8 @@ export default function App() {
     ws.onclose = () => {
       console.log('WebSocket connection closed. Reconnecting...');
       socketRef.current = null;
-      // Exponential backoff for reconnection
-      const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
+      // Faster initial reconnection, then exponential backoff
+      const delay = reconnectAttempts.current === 0 ? 500 : Math.min(1000 * Math.pow(2, reconnectAttempts.current - 1), 10000);
       reconnectAttempts.current += 1;
       reconnectTimeoutRef.current = setTimeout(connectWebSocket, delay);
     };
@@ -734,7 +1748,7 @@ export default function App() {
           {hasPermission('cardapio') && (
             <SidebarItem 
               icon={<MenuIcon />} 
-              label="Cardápio" 
+              label="Restaurante" 
               active={activeTab === 'cardapio'} 
               onClick={() => { 
                 vibrate(20);
@@ -743,6 +1757,16 @@ export default function App() {
               }} 
             />
           )}
+          <SidebarItem 
+            icon={<CheckSquare />} 
+            label="Tarefas" 
+            active={activeTab === 'tarefas'} 
+            onClick={() => { 
+              vibrate(20);
+              setActiveTab('tarefas'); 
+              setIsSidebarOpen(false); 
+            }} 
+          />
           {hasPermission('config') && (
             <SidebarItem 
               icon={<Settings />} 
@@ -800,7 +1824,7 @@ export default function App() {
           </Button>
 
           <div className="mt-4 px-2 text-[10px] text-zinc-400 dark:text-zinc-500 space-y-1 border-t border-zinc-100 pt-4 dark:border-zinc-800/50">
-            <p className="font-medium text-zinc-400">Versão 1.1.4 beta</p>
+            <p className="font-medium text-zinc-400">Versão 1.1.5 beta</p>
             <div className="opacity-70">
               <p>Created by: Abiner</p>
               <p>Email for contact: abinerfelipe@gmail.com</p>
@@ -833,7 +1857,7 @@ export default function App() {
             <h2 className="text-base font-semibold capitalize dark:text-zinc-100">
               {activeTab === 'gestao' ? 'Gestão' : 
                activeTab === 'historico' ? 'Histórico' : 
-               activeTab === 'cardapio' ? 'Cardápio' : 
+               activeTab === 'cardapio' ? 'Restaurante' : 
                activeTab === 'config' ? 'Configurações' : 
                activeTab}
             </h2>
@@ -862,8 +1886,8 @@ export default function App() {
                 );
               }}
             >
-              <RefreshCw className="h-4 w-4 mr-1" />
-              <span className="text-[10px] font-bold uppercase">Sincronizar</span>
+              <RefreshCw className="h-4 w-4 md:mr-1" />
+              <span className="hidden md:inline text-[10px] font-bold uppercase">Sincronizar</span>
             </Button>
             {activeTab === 'mesas' && (
               <div className="flex items-center gap-2 text-[10px]">
@@ -882,6 +1906,7 @@ export default function App() {
                 <TableCard 
                   key={table.id} 
                   table={table} 
+                  settings={settings}
                   onClick={() => {
                     vibrate(30);
                     setSelectedTable(table);
@@ -890,6 +1915,16 @@ export default function App() {
                 />
               ))}
             </div>
+          )}
+
+          {activeTab === 'tarefas' && (
+            <TasksTab 
+              tasks={tasks} 
+              users={users} 
+              currentUser={user} 
+              sendWS={sendWS} 
+              hasPermission={hasPermission} 
+            />
           )}
 
           {activeTab === 'cardapio' && (
@@ -912,6 +1947,7 @@ export default function App() {
               menu={sortedMenu} 
               categories={sortedCategories}
               details={sortedGroups}
+              tables={tables}
               sendWS={sendWS}
               onAddMenu={() => setIsAddMenuModalOpen(true)}
               onEditMenu={(item: any) => {
@@ -934,6 +1970,14 @@ export default function App() {
               transferRequests={transferRequests}
               allOrders={allOrders}
               vibrate={vibrate}
+              onlineUsers={onlineUsers}
+              cashierStatus={cashierStatus}
+              cashierTransactions={cashierTransactions}
+              accountsPayable={accountsPayable}
+              managePrinterHub={managePrinterHub}
+              setManagePrinterHub={setManagePrinterHub}
+              printerHubUserRestriction={printerHubUserRestriction}
+              setPrinterHubUserRestriction={setPrinterHubUserRestriction}
             />
           )}
 
@@ -1009,6 +2053,7 @@ export default function App() {
         table={selectedTable}
         orders={currentOrders}
         details={details}
+        settings={settings}
         isHost={user?.role === 'host'}
         onOpenTable={(data) => {
           sendWS('TABLE_OPEN', { tableId: selectedTable?.id, userId: user?.id, username: user?.username, ...data });
@@ -1019,7 +2064,10 @@ export default function App() {
         }}
         onRequestBill={() => setIsConfirmBillModalOpen(true)}
         onAddOrder={() => setIsOrderModalOpen(true)}
-        onCloseTable={() => setIsCloseTableModalOpen(true)}
+        onCloseTable={() => {
+          setIsCloseTableModalOpen(true);
+          setIsTableModalOpen(false); // Fix: this prevents TableActionsModal from showing up underneath or updating to 'Aberta' form
+        }}
         onMarkRead={(orderId: string) => {
           sendWS('ORDER_MARK_READ', { orderId, userId: user?.id, username: user?.username });
         }}
@@ -1063,61 +2111,18 @@ export default function App() {
       </Modal>
 
       <Modal isOpen={isCloseTableModalOpen} onClose={() => setIsCloseTableModalOpen(false)} title="Fechar Mesa">
-        <form onSubmit={(e) => {
-          e.preventDefault();
-          const formData = new FormData(e.currentTarget);
-          const methods = formData.getAll('payment') as string[];
-          if (methods.length === 0) return toast.error('Selecione ao menos uma forma de pagamento');
-          sendWS('TABLE_CLOSE', { tableId: selectedTable?.id, userId: user?.id, username: user?.username, paymentMethods: methods });
-          setIsCloseTableModalOpen(false);
-          setIsTableModalOpen(false);
-        }} className="space-y-4">
-          <div className="rounded-xl bg-emerald-50 p-4 border border-emerald-100 dark:bg-emerald-900/20 dark:border-emerald-800">
-            {(() => {
-              const subtotal = currentOrders.reduce((acc, o) => acc + (o.item_price || 0) * o.quantity, 0);
-              const serviceFee = parseFloat(settings.service_fee || '10');
-              const service = subtotal * (serviceFee / 100);
-              const total = subtotal + service;
-              const perPerson = selectedTable?.people_count ? total / selectedTable.people_count : total;
-              
-              return (
-                <div className="space-y-2 text-sm">
-                  <div className="flex justify-between text-emerald-700 dark:text-emerald-300">
-                    <span>Subtotal:</span>
-                    <span className="font-bold">R$ {subtotal.toFixed(2)}</span>
-                  </div>
-                  <div className="flex justify-between text-emerald-700 dark:text-emerald-300">
-                    <span>Serviço ({serviceFee}%):</span>
-                    <span className="font-bold">R$ {service.toFixed(2)}</span>
-                  </div>
-                  <div className="border-t border-emerald-200 pt-2 flex justify-between text-lg font-bold text-emerald-900 dark:border-emerald-800 dark:text-emerald-100">
-                    <span>Total:</span>
-                    <span>R$ {total.toFixed(2)}</span>
-                  </div>
-                  {selectedTable?.people_count && selectedTable.people_count > 1 && (
-                    <div className="border-t border-emerald-200 border-dashed pt-2 flex justify-between text-xs italic text-emerald-600 dark:border-emerald-800 dark:text-emerald-400">
-                      <span>Divisão ({selectedTable.people_count} pessoas):</span>
-                      <span>R$ {perPerson.toFixed(2)} por pessoa</span>
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
-          </div>
-          <p className="text-zinc-600 text-sm dark:text-zinc-400">Selecione as formas de pagamento:</p>
-          <div className="grid grid-cols-2 gap-3">
-            {['Dinheiro', 'Pix', 'Crédito', 'Débito'].map(method => (
-              <label key={method} className="flex items-center gap-2 rounded-lg border border-zinc-200 p-3 hover:bg-zinc-50 cursor-pointer dark:border-zinc-700 dark:hover:bg-zinc-800">
-                <input type="checkbox" name="payment" value={method} className="h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500" />
-                <span className="text-sm font-medium dark:text-zinc-200">{method}</span>
-              </label>
-            ))}
-          </div>
-          <div className="flex justify-end gap-3 pt-4">
-            <Button type="button" variant="outline" onClick={() => setIsCloseTableModalOpen(false)}>Cancelar</Button>
-            <Button type="submit" variant="danger">Confirmar Fechamento</Button>
-          </div>
-        </form>
+        <CloseTableModalContent 
+          selectedTable={selectedTable}
+          currentOrders={currentOrders}
+          settings={settings}
+          user={user}
+          sendWS={sendWS}
+          hasPermission={hasPermission}
+          onClose={() => {
+            setIsCloseTableModalOpen(false);
+            setIsTableModalOpen(false);
+          }}
+        />
       </Modal>
 
       <OrderModal 
@@ -1130,6 +2135,14 @@ export default function App() {
         onSend={(items) => {
           vibrate([50, 30, 50]);
           sendWS('ORDER_SEND', { tableId: selectedTable?.id, userId: user?.id, username: user?.username, items });
+          
+          if (settings?.manage_printer !== false) {
+            const printableItems = items.filter((i: any) => i.print_enabled !== 0 && i.print_enabled !== false);
+            if (printableItems.length > 0) {
+              printKitchenReceipt(String(formatTableNumber(selectedTable?.number)), user?.username || 'Sistema', printableItems);
+            }
+          }
+          
           setIsOrderModalOpen(false);
         }}
       />
@@ -1139,6 +2152,7 @@ export default function App() {
         onClose={() => setIsAddUserModalOpen(false)} 
         onSuccess={fetchUsers}
         currentUser={user}
+        settings={settings}
       />
       
       <EditUserModal 
@@ -1150,6 +2164,7 @@ export default function App() {
         user={editingUser}
         onSuccess={fetchUsers}
         currentUser={user}
+        settings={settings}
       />
       
       <AddMenuModal 
@@ -1221,12 +2236,14 @@ function SidebarItem({ icon, label, active, onClick }: { icon: React.ReactNode; 
   );
 }
 
-function TableActionsModal({ isOpen, onClose, table, orders, isHost, onOpenTable, onRequestBill, onAddOrder, onCloseTable, onMarkRead, onUpdateTable, onDeleteOrder, canDeleteOrder, onTransferTable, canTransfer, allTables, details = [] }: any) {
+function TableActionsModal({ isOpen, onClose, table, orders, isHost, onOpenTable, onRequestBill, onAddOrder, onCloseTable, onMarkRead, onUpdateTable, onDeleteOrder, canDeleteOrder, onTransferTable, canTransfer, allTables, details = [], settings }: any) {
   const [isEditing, setIsEditing] = useState(false);
   const [isTransferring, setIsTransferring] = useState(false);
   const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
   const [targetTable, setTargetTable] = useState<string>('');
-  const [tableType, setTableType] = useState<'salao' | 'gramado'>('salao');
+  
+  const tableTypes = JSON.parse(settings?.table_types || '[{"id":"salao","name":"Salão","color":"#10b981"},{"id":"gramado","name":"Gramado","color":"#3b82f6"}]');
+  const [tableType, setTableType] = useState<string>(tableTypes[0]?.id || 'salao');
 
   useEffect(() => {
     if (!isOpen) {
@@ -1234,7 +2251,7 @@ function TableActionsModal({ isOpen, onClose, table, orders, isHost, onOpenTable
       setIsTransferring(false);
       setSelectedOrders([]);
       setTargetTable('');
-      setTableType('salao');
+      setTableType(tableTypes[0]?.id || 'salao');
     }
   }, [isOpen]);
 
@@ -1265,32 +2282,23 @@ function TableActionsModal({ isOpen, onClose, table, orders, isHost, onOpenTable
             <div className="space-y-2">
               <label className="text-sm font-medium dark:text-zinc-300">Tipo de Mesa</label>
               <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setTableType('salao')}
-                  className={cn(
-                    "flex items-center justify-center gap-2 p-3 rounded-xl border-2 transition-all",
-                    tableType === 'salao' 
-                      ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-400" 
-                      : "border-zinc-100 bg-zinc-50 text-zinc-500 dark:bg-zinc-800 dark:border-zinc-700"
-                  )}
-                >
-                  <Home className="h-4 w-4" />
-                  <span className="text-xs font-bold uppercase">Salão</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTableType('gramado')}
-                  className={cn(
-                    "flex items-center justify-center gap-2 p-3 rounded-xl border-2 transition-all",
-                    tableType === 'gramado' 
-                      ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400" 
-                      : "border-zinc-100 bg-zinc-50 text-zinc-500 dark:bg-zinc-800 dark:border-zinc-700"
-                  )}
-                >
-                  <Trees className="h-4 w-4" />
-                  <span className="text-xs font-bold uppercase">Gramado</span>
-                </button>
+                {tableTypes.map((t: any) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => setTableType(t.id)}
+                    className={cn(
+                      "flex items-center justify-center gap-2 p-3 rounded-xl border-2 transition-all",
+                      tableType === t.id 
+                        ? "bg-zinc-50 dark:bg-zinc-800" 
+                        : "border-zinc-100 bg-zinc-50 text-zinc-500 dark:bg-zinc-800 dark:border-zinc-700"
+                    )}
+                    style={tableType === t.id ? { borderColor: t.color, color: t.color, backgroundColor: `${t.color}10` } : {}}
+                  >
+                    {getIcon(t.icon || 'MapPin')}
+                    <span className="text-xs font-bold uppercase">{t.name}</span>
+                  </button>
+                ))}
               </div>
             </div>
             <div className="space-y-2">
@@ -1315,32 +2323,23 @@ function TableActionsModal({ isOpen, onClose, table, orders, isHost, onOpenTable
                 <div className="space-y-2">
                   <label className="text-xs font-medium dark:text-zinc-400">Tipo da Mesa de Destino</label>
                   <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setTableType('salao')}
-                      className={cn(
-                        "flex items-center justify-center gap-2 p-2 rounded-xl border-2 transition-all",
-                        tableType === 'salao' 
-                          ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-400" 
-                          : "border-zinc-100 bg-zinc-50 text-zinc-500 dark:bg-zinc-800 dark:border-zinc-700"
-                      )}
-                    >
-                      <Home className="h-4 w-4" />
-                      <span className="text-[10px] font-bold uppercase">Salão</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setTableType('gramado')}
-                      className={cn(
-                        "flex items-center justify-center gap-2 p-2 rounded-xl border-2 transition-all",
-                        tableType === 'gramado' 
-                          ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400" 
-                          : "border-zinc-100 bg-zinc-50 text-zinc-500 dark:bg-zinc-800 dark:border-zinc-700"
-                      )}
-                    >
-                      <Trees className="h-4 w-4" />
-                      <span className="text-[10px] font-bold uppercase">Gramado</span>
-                    </button>
+                    {tableTypes.map((t: any) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => setTableType(t.id)}
+                        className={cn(
+                          "flex items-center justify-center gap-2 p-2 rounded-xl border-2 transition-all",
+                          tableType === t.id 
+                            ? "bg-zinc-50 dark:bg-zinc-800" 
+                            : "border-zinc-100 bg-zinc-50 text-zinc-500 dark:bg-zinc-800 dark:border-zinc-700"
+                        )}
+                        style={tableType === t.id ? { borderColor: t.color, color: t.color, backgroundColor: `${t.color}10` } : {}}
+                      >
+                        <Home className="h-4 w-4" />
+                        <span className="text-[10px] font-bold uppercase">{t.name}</span>
+                      </button>
+                    ))}
                   </div>
                 </div>
 
@@ -1618,9 +2617,9 @@ function MenuTab({ menu, categories = [], details = [], canEdit, onAdd, onEdit, 
           body: JSON.stringify(content)
         });
         if (res.ok) {
-          toast.success('Cardápio importado com sucesso!');
+          toast.success('Restaurante importado com sucesso!');
         } else {
-          toast.error('Erro ao importar cardápio');
+          toast.error('Erro ao importar restaurante');
         }
       } catch (err) {
         toast.error('Arquivo inválido');
@@ -1697,7 +2696,7 @@ function MenuTab({ menu, categories = [], details = [], canEdit, onAdd, onEdit, 
             <div className="relative flex-1 max-w-xs">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
               <Input 
-                placeholder="Buscar no cardápio..." 
+                placeholder="Buscar no restaurante..." 
                 className="pl-10" 
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -1731,7 +2730,7 @@ function MenuTab({ menu, categories = [], details = [], canEdit, onAdd, onEdit, 
                 onClick={() => { setActiveCategory(null); setActiveGroup(null); }} 
                 className="hover:underline"
               >
-                Cardápio
+                Restaurante
               </button>
               <ChevronRight className="h-4 w-4" />
               <span className="font-bold">{activeCategory}</span>
@@ -2274,8 +3273,17 @@ function CategoryDetailManager({ categories = [], details = [], menu = [], sendW
 }
 
 function PermissionsManager({ settings, sendWS, currentUser }: any) {
-  const roles = ['admin', 'waiter', 'kitchen', 'caixa'];
-  const [activeRole, setActiveRole] = useState(roles[0]);
+  const defaultRoles = ['admin', 'waiter', 'kitchen', 'caixa'];
+  const customRoles = settings.custom_roles ? JSON.parse(settings.custom_roles) : [];
+  const allRoles = Array.from(new Set([...defaultRoles, ...customRoles])).sort((a, b) => a.localeCompare(b));
+  
+  // Roles that cannot be renamed or deleted for system safety
+  const systemProtectedRoles = ['host', 'admin'];
+  
+  const [activeRole, setActiveRole] = useState(allRoles[0]);
+  const [isRoleModalOpen, setIsRoleModalOpen] = useState(false);
+  const [newRoleName, setNewRoleName] = useState('');
+  const [editingRole, setEditingRole] = useState<string | null>(null);
 
   const permissionGroups = [
     {
@@ -2283,20 +3291,23 @@ function PermissionsManager({ settings, sendWS, currentUser }: any) {
       permissions: [
         { key: 'mesas', label: 'Mesas' },
         { key: 'historico', label: 'Histórico' },
-        { key: 'cardapio', label: 'Cardápio' },
+        { key: 'cardapio', label: 'Restaurante' },
         { key: 'gestao', label: 'Gestão' },
         { key: 'config', label: 'Configurações' },
+        { key: 'erp', label: 'Financeiro (ERP)' },
       ]
     },
     {
       title: 'Ações de Gestão',
       permissions: [
-        { key: 'edit_menu', label: 'Gestão: Produtos e Cardápio' },
+        { key: 'edit_menu', label: 'Gestão: Produtos e Restaurante' },
         { key: 'manage_categories', label: 'Gestão: Categorias e Grupos' },
         { key: 'reorder_categories', label: 'Gestão: Organizar Categorias' },
         { key: 'reorder_groups', label: 'Gestão: Organizar Grupos' },
         { key: 'manage_users', label: 'Gestão: Equipe' },
         { key: 'manage_permissions', label: 'Gestão: Autorizações' },
+        { key: 'manage_tables', label: 'Gestão: Mesas' },
+        { key: 'manage_printer', label: 'Gestão: Impressora' },
         { key: 'clear_history', label: 'Gestão: Ações de Limpeza' },
         { key: 'native_view', label: 'Visualização App Nativo' },
       ]
@@ -2306,7 +3317,10 @@ function PermissionsManager({ settings, sendWS, currentUser }: any) {
       permissions: [
         { key: 'delete_order', label: 'Excluir Pedidos' },
         { key: 'transfer_table', label: 'Transferir Mesa' },
+        { key: 'apply_discount', label: 'Aplicar Desconto' },
+        { key: 'remove_service_fee', label: 'Remover Taxa de Serviço' },
         { key: 'mark_history_read', label: 'Marcar Visto no Histórico' },
+        { key: 'manage_tasks', label: 'Criar/Gerenciar Tarefas' },
       ]
     }
   ];
@@ -2322,22 +3336,122 @@ function PermissionsManager({ settings, sendWS, currentUser }: any) {
   return (
     <div className="space-y-6">
       {/* Role Tabs */}
-      <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
-        {roles.map(role => (
-          <button
-            key={role}
-            onClick={() => setActiveRole(role)}
-            className={cn(
-              "px-4 py-2 rounded-xl text-sm font-bold transition-all whitespace-nowrap",
-              activeRole === role 
-                ? "bg-emerald-500 text-white shadow-lg shadow-emerald-500/20" 
-                : "bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-50 dark:bg-zinc-900 dark:border-zinc-800 dark:text-zinc-400"
-            )}
-          >
-            {role === 'waiter' ? 'Garçom' : role === 'kitchen' ? 'Cozinha' : role.charAt(0).toUpperCase() + role.slice(1)}
-          </button>
-        ))}
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide flex-1">
+          {allRoles.map(role => (
+            <button
+              key={role}
+              onClick={() => setActiveRole(role)}
+              className={cn(
+                "px-4 py-2 rounded-xl text-sm font-bold transition-all whitespace-nowrap",
+                activeRole === role 
+                  ? "bg-emerald-500 text-white shadow-lg shadow-emerald-500/20" 
+                  : "bg-white border border-zinc-200 text-zinc-600 hover:bg-zinc-50 dark:bg-zinc-900 dark:border-zinc-800 dark:text-zinc-400"
+              )}
+            >
+              {role === 'waiter' ? 'Garçom' : role === 'kitchen' ? 'Cozinha' : role === 'caixa' ? 'Caixa' : role.charAt(0).toUpperCase() + role.slice(1)}
+            </button>
+          ))}
+        </div>
+        <Button 
+          variant="outline" 
+          size="sm" 
+          className="shrink-0 gap-2"
+          onClick={() => setIsRoleModalOpen(true)}
+        >
+          <Plus className="h-4 w-4" /> Cargos
+        </Button>
       </div>
+
+      <Modal isOpen={isRoleModalOpen} onClose={() => { setIsRoleModalOpen(false); setEditingRole(null); setNewRoleName(''); }} title="Gerenciar Cargos">
+        <div className="space-y-4">
+          <div className="flex gap-2">
+            <Input 
+              placeholder="Nome do novo cargo..." 
+              value={newRoleName} 
+              onChange={(e: any) => setNewRoleName(e.target.value)} 
+            />
+            <Button onClick={() => {
+              if (!newRoleName.trim()) return;
+              const roleKey = newRoleName.trim().toLowerCase().replace(/\s+/g, '_');
+              if (allRoles.includes(roleKey)) {
+                toast.error("Este cargo já existe");
+                return;
+              }
+              const updated = [...customRoles, roleKey];
+              sendWS('SETTINGS_UPDATE', { custom_roles: JSON.stringify(updated) });
+              setNewRoleName('');
+            }}>Adicionar</Button>
+          </div>
+
+          <div className="space-y-2">
+            <h4 className="text-xs font-bold uppercase text-zinc-400">Cargos Disponíveis</h4>
+            {allRoles.filter(r => r !== 'host').map((role: string) => (
+              <div key={role} className="flex items-center justify-between p-3 rounded-xl bg-zinc-50 dark:bg-zinc-800/50">
+                {editingRole === role ? (
+                  <div className="flex gap-2 w-full">
+                    <Input 
+                      autoFocus
+                      value={newRoleName} 
+                      onChange={(e: any) => setNewRoleName(e.target.value)} 
+                    />
+                    <Button onClick={() => {
+                      if (!newRoleName.trim()) return;
+                      const roleKey = newRoleName.trim().toLowerCase().replace(/\s+/g, '_');
+                      if (allRoles.includes(roleKey) && roleKey !== role) {
+                        toast.error("Este cargo já existe");
+                        return;
+                      }
+                      sendWS('ROLE_RENAME', { oldName: role, newName: roleKey });
+                      setEditingRole(null);
+                      setNewRoleName('');
+                    }}>Salvar</Button>
+                    <Button variant="outline" onClick={() => { setEditingRole(null); setNewRoleName(''); }}>X</Button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex flex-col">
+                      <span className="font-medium dark:text-zinc-200">
+                        {role === 'waiter' ? 'Garçom' : role === 'kitchen' ? 'Cozinha' : role === 'caixa' ? 'Caixa' : role.charAt(0).toUpperCase() + role.slice(1)}
+                      </span>
+                      {systemProtectedRoles.includes(role) && (
+                        <span className="text-[10px] text-zinc-400 uppercase font-bold">Sistema</span>
+                      )}
+                    </div>
+                    <div className="flex gap-1">
+                      {!systemProtectedRoles.includes(role) && (
+                        <>
+                          <button 
+                            onClick={() => {
+                              setEditingRole(role);
+                              setNewRoleName(role);
+                            }}
+                            className="p-1.5 text-zinc-400 hover:text-emerald-500"
+                          >
+                            <Edit2 className="h-4 w-4" />
+                          </button>
+                          {!defaultRoles.includes(role) && (
+                            <button 
+                              onClick={() => {
+                                if (confirm(`Deseja excluir o cargo "${role}"? Todos os usuários vinculados serão movidos para "Garçom".`)) {
+                                  sendWS('ROLE_DELETE', { roleName: role });
+                                }
+                              }}
+                              className="p-1.5 text-zinc-400 hover:text-rose-500"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      </Modal>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {permissionGroups.map(group => {
@@ -2378,6 +3492,7 @@ function GestaoTab({
   menu, 
   categories, 
   details, 
+  tables = [],
   sendWS, 
   onAddMenu, 
   onEditMenu, 
@@ -2391,12 +3506,21 @@ function GestaoTab({
   onEditUser,
   transferRequests = [],
   allOrders = [],
-  vibrate
+  vibrate,
+  onlineUsers = [],
+  cashierStatus = { status: 'closed' },
+  cashierTransactions = [],
+  accountsPayable = [],
+  managePrinterHub,
+  setManagePrinterHub,
+  printerHubUserRestriction,
+  setPrinterHubUserRestriction
 }: any) {
   const [activeSection, setActiveSection] = useState<string | null>(null);
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, title: '', message: '', onConfirm: () => {} });
 
   const isHost = currentUser?.role === 'host';
+  const isAdmin = currentUser?.role === 'admin';
 
   const deleteUser = (id: string) => {
     setConfirmModal({
@@ -2430,7 +3554,96 @@ function GestaoTab({
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="space-y-4">
-          <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider px-2">Cardápio</h3>
+          <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider px-2">Financeiro</h3>
+          {hasPermission('erp') && (
+            <button 
+              onClick={() => setActiveSection('finance')}
+              className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
+            >
+              <div className="flex items-center gap-4">
+                <div className="p-2 rounded-xl bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400">
+                  <DollarSign className="h-6 w-6" />
+                </div>
+                <div className="text-left">
+                  <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Financeiro</h3>
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400">Caixa e Vendas</p>
+                </div>
+              </div>
+              <ChevronRight className="h-5 w-5 text-zinc-400" />
+            </button>
+          )}
+          {hasPermission('erp') && (
+            <button 
+              onClick={() => setActiveSection('accounts_payable')}
+              className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
+            >
+              <div className="flex items-center gap-4">
+                <div className="p-2 rounded-xl bg-rose-100 text-rose-600 dark:bg-rose-900/30 dark:text-rose-400">
+                  <CreditCard className="h-6 w-6" />
+                </div>
+                <div className="text-left">
+                  <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Contas a Pagar</h3>
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400">Lembretes e Pagamentos</p>
+                </div>
+              </div>
+              <ChevronRight className="h-5 w-5 text-zinc-400" />
+            </button>
+          )}
+
+          <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider px-2 pt-4">Administrativo</h3>
+          {hasPermission('manage_users') && (
+            <button 
+              onClick={() => setActiveSection('users')}
+              className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
+            >
+              <div className="flex items-center gap-4">
+                <div className="p-2 rounded-xl bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-400">
+                  <Users className="h-6 w-6" />
+                </div>
+                <div className="text-left">
+                  <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Equipe</h3>
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400">Usuários e acessos</p>
+                </div>
+              </div>
+              <ChevronRight className="h-5 w-5 text-zinc-400" />
+            </button>
+          )}
+          {hasPermission('manage_permissions') && (
+            <button 
+              onClick={() => setActiveSection('permissions')}
+              className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
+            >
+              <div className="flex items-center gap-4">
+                <div className="p-2 rounded-xl bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400">
+                  <ShieldCheck className="h-6 w-6" />
+                </div>
+                <div className="text-left">
+                  <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Autorizações</h3>
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400">Permissões de cargos</p>
+                </div>
+              </div>
+              <ChevronRight className="h-5 w-5 text-zinc-400" />
+            </button>
+          )}
+          <button 
+            onClick={() => setActiveSection('gestao_news')}
+            className="w-full flex items-center justify-between p-4 rounded-2xl bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 transition-colors dark:bg-emerald-900/10 dark:border-emerald-900/30 dark:hover:bg-emerald-900/20"
+          >
+            <div className="flex items-center gap-4">
+              <div className="p-2 rounded-xl bg-emerald-100 text-emerald-600 dark:bg-emerald-900/50 dark:text-emerald-400">
+                <Sparkles className="h-6 w-6" />
+              </div>
+              <div className="text-left">
+                <h3 className="font-semibold text-emerald-900 dark:text-emerald-100">Novidades da Gestão</h3>
+                <p className="text-sm text-emerald-700 dark:text-emerald-400">O que mudou na versão 1.1.5</p>
+              </div>
+            </div>
+            <ChevronRight className="h-5 w-5 text-emerald-400" />
+          </button>
+        </div>
+
+        <div className="space-y-4">
+          <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider px-2">Restaurante</h3>
           {hasPermission('edit_menu') && (
             <button 
               onClick={() => setActiveSection('products')}
@@ -2460,46 +3673,43 @@ function GestaoTab({
                 </div>
                 <div className="text-left">
                   <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Categorias e Grupos</h3>
-                  <p className="text-sm text-zinc-500 dark:text-zinc-400">Organizar cardápio</p>
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400">Organizar restaurante</p>
                 </div>
               </div>
               <ChevronRight className="h-5 w-5 text-zinc-400" />
             </button>
           )}
-        </div>
 
-        <div className="space-y-4">
-          <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider px-2">Administrativo</h3>
-          {hasPermission('manage_users') && (
+          {hasPermission('manage_tables') && (
             <button 
-              onClick={() => setActiveSection('users')}
+              onClick={() => setActiveSection('tables_mgmt')}
               className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
             >
               <div className="flex items-center gap-4">
-                <div className="p-2 rounded-xl bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-400">
-                  <Users className="h-6 w-6" />
+                <div className="p-2 rounded-xl bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400">
+                  <LayoutDashboard className="h-6 w-6" />
                 </div>
                 <div className="text-left">
-                  <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Equipe</h3>
-                  <p className="text-sm text-zinc-500 dark:text-zinc-400">Usuários e acessos</p>
+                  <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Mesas</h3>
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400">Gerenciar mesas e cores</p>
                 </div>
               </div>
               <ChevronRight className="h-5 w-5 text-zinc-400" />
             </button>
           )}
 
-          {hasPermission('manage_permissions') && (
+          {hasPermission('manage_printer') && (
             <button 
-              onClick={() => setActiveSection('permissions')}
+              onClick={() => setActiveSection('printer')}
               className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
             >
               <div className="flex items-center gap-4">
                 <div className="p-2 rounded-xl bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400">
-                  <ShieldCheck className="h-6 w-6" />
+                  <Printer className="h-6 w-6" />
                 </div>
                 <div className="text-left">
-                  <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Autorizações</h3>
-                  <p className="text-sm text-zinc-500 dark:text-zinc-400">Permissões de cargos</p>
+                  <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Impressora</h3>
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400">Configurar cupons</p>
                 </div>
               </div>
               <ChevronRight className="h-5 w-5 text-zinc-400" />
@@ -2530,6 +3740,19 @@ function GestaoTab({
 
   const renderSectionContent = () => {
     switch (activeSection) {
+      case 'accounts_payable':
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+              <AccountsPayableSection 
+                accountsPayable={accountsPayable} 
+                sendWS={sendWS} 
+                cashierStatus={cashierStatus}
+                currentUser={currentUser}
+              />
+            </div>
+          </div>
+        );
       case 'products':
         return (
           <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
@@ -2579,36 +3802,64 @@ function GestaoTab({
                 <Button onClick={onAddUser} variant="outline"><UserPlus className="mr-2 h-4 w-4" /> Novo Usuário</Button>
               </div>
               <div className="rounded-xl border border-zinc-200 bg-white dark:bg-zinc-900 dark:border-zinc-800 divide-y divide-zinc-100 dark:divide-zinc-800">
-                {users.map((u: any) => (
-                  <div key={u.id} className="flex items-center justify-between p-4 sm:px-6 hover:bg-zinc-50/50 dark:hover:bg-zinc-800/50 transition-colors">
-                    <div>
-                      <p className="font-medium dark:text-zinc-200">{u.username}</p>
-                      <p className="text-xs sm:text-sm text-zinc-500 capitalize dark:text-zinc-400">
-                        {u.role === 'waiter' ? 'Garçom' : u.role === 'kitchen' ? 'Cozinha' : u.role}
-                      </p>
+                {users.map((u: any) => {
+                  const isOnline = onlineUsers.some(ou => ou.userId === u.id);
+                  return (
+                    <div key={u.id} className="flex items-center justify-between p-4 sm:px-6 hover:bg-zinc-50/50 dark:hover:bg-zinc-800/50 transition-colors">
+                      <div className="flex items-center gap-3">
+                        <div className={cn(
+                          "h-2 w-2 rounded-full",
+                          isOnline ? "bg-emerald-500 animate-pulse" : "bg-zinc-300 dark:bg-zinc-700"
+                        )} />
+                        <div>
+                          <p className="font-medium dark:text-zinc-200">{u.username}</p>
+                          <div className="flex items-center gap-2">
+                            <p className="text-xs sm:text-sm text-zinc-500 capitalize dark:text-zinc-400">
+                              {u.role === 'waiter' ? 'Garçom' : u.role === 'kitchen' ? 'Cozinha' : u.role === 'caixa' ? 'Caixa' : u.role}
+                            </p>
+                            {isOnline && <span className="text-[10px] bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 px-1.5 py-0.5 rounded font-bold uppercase">Online</span>}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 sm:gap-2">
+                        {isOnline && u.role !== 'host' && (isHost || isAdmin) && (
+                          <Button 
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              if (confirm(`Deseja realmente desconectar ${u.username}?`)) {
+                                sendWS('USER_DISCONNECT', { userId: u.id });
+                              }
+                            }}
+                            className="text-amber-600 border-amber-200 hover:bg-amber-50 dark:hover:bg-amber-900/30 gap-1"
+                            title="Desconectar Usuário"
+                          >
+                            <LogOut className="h-4 w-4" />
+                            <span className="hidden sm:inline">Desconectar</span>
+                          </Button>
+                        )}
+                        {(u.role !== 'host' || isHost) && (
+                          <button 
+                            onClick={() => onEditUser(u)} 
+                            className="p-2 text-zinc-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 rounded-lg transition-colors"
+                            title="Editar"
+                          >
+                            <Edit2 className="h-4 w-4 sm:h-5 sm:w-5" />
+                          </button>
+                        )}
+                        {(u.username !== 'deckserrinha' && (u.role !== 'host' || isHost)) && (
+                          <button 
+                            onClick={() => deleteUser(u.id)} 
+                            className="p-2 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/30 rounded-lg transition-colors"
+                            title="Excluir"
+                          >
+                            <Trash2 className="h-4 w-4 sm:h-5 sm:w-5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
-                    <div className="flex items-center gap-1 sm:gap-2">
-                      {(u.role !== 'host' || isHost) && (
-                        <button 
-                          onClick={() => onEditUser(u)} 
-                          className="p-2 text-zinc-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 rounded-lg transition-colors"
-                          title="Editar"
-                        >
-                          <Edit2 className="h-4 w-4 sm:h-5 sm:w-5" />
-                        </button>
-                      )}
-                      {(u.username !== 'deckserrinha' && (u.role !== 'host' || isHost)) && (
-                        <button 
-                          onClick={() => deleteUser(u.id)} 
-                          className="p-2 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/30 rounded-lg transition-colors"
-                          title="Excluir"
-                        >
-                          <Trash2 className="h-4 w-4 sm:h-5 sm:w-5" />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -2621,10 +3872,102 @@ function GestaoTab({
             </div>
           </div>
         );
+      case 'tables_mgmt':
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+              <TableManagement tables={tables} sendWS={sendWS} settings={settings} />
+            </div>
+          </div>
+        );
       case 'permissions':
         return (
           <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
             <PermissionsManager settings={settings} sendWS={sendWS} currentUser={currentUser} />
+          </div>
+        );
+      case 'printer':
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+              <PrinterSettings 
+                settings={settings} 
+                sendWS={sendWS}
+                managePrinterHub={managePrinterHub}
+                setManagePrinterHub={setManagePrinterHub}
+                printerHubUserRestriction={printerHubUserRestriction}
+                setPrinterHubUserRestriction={setPrinterHubUserRestriction}
+                users={users}
+              />
+            </div>
+          </div>
+        );
+      case 'finance':
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+              <FinanceSection 
+                currentUser={currentUser} 
+                cashierStatus={cashierStatus} 
+                cashierTransactions={cashierTransactions}
+                sendWS={sendWS} 
+                allOrders={allOrders}
+                hasPermission={hasPermission}
+              />
+            </div>
+          </div>
+        );
+      case 'gestao_news':
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+              <h3 className="text-lg font-bold mb-4 dark:text-zinc-100">Novidades da Gestão (v1.1.5)</h3>
+              <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-6">Principais mudanças administrativas desde a v1.1.3:</p>
+              
+              <div className="space-y-6">
+                <section>
+                  <h4 className="text-xs font-bold uppercase text-purple-600 mb-3 dark:text-purple-400">1. Equipe e Autorizações</h4>
+                  <ul className="space-y-3">
+                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
+                      <div className="h-5 w-5 shrink-0 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center text-[10px] font-bold">1</div>
+                      <p><strong>Cargos Dinâmicos:</strong> Agora você pode criar, renomear e excluir qualquer cargo. O sistema atualiza automaticamente as permissões e usuários vinculados.</p>
+                    </li>
+                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
+                      <div className="h-5 w-5 shrink-0 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center text-[10px] font-bold">2</div>
+                      <p><strong>Edição de Cargos Existentes:</strong> Liberada a edição de nomes para cargos padrão (Garçom, Cozinha, Caixa), permitindo adaptar a nomenclatura ao seu negócio.</p>
+                    </li>
+                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
+                      <div className="h-5 w-5 shrink-0 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center text-[10px] font-bold">3</div>
+                      <p><strong>Ordenação Alfabética:</strong> Cargos e usuários agora são listados em ordem alfabética para facilitar a busca em equipes grandes.</p>
+                    </li>
+                  </ul>
+                </section>
+
+                <section>
+                  <h4 className="text-xs font-bold uppercase text-emerald-600 mb-3 dark:text-emerald-400">2. Infraestrutura e Áreas</h4>
+                  <ul className="space-y-3">
+                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
+                      <div className="h-5 w-5 shrink-0 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center text-[10px] font-bold">4</div>
+                      <p><strong>Gerenciamento de Áreas:</strong> Personalização total de nomes, cores e ícones para áreas de atendimento (Salão, Deck, Bar, etc).</p>
+                    </li>
+                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
+                      <div className="h-5 w-5 shrink-0 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center text-[10px] font-bold">5</div>
+                      <p><strong>Histórico Inteligente:</strong> O histórico agora reflete os nomes personalizados das áreas e permite ações rápidas de aprovação.</p>
+                    </li>
+                  </ul>
+                </section>
+
+                <section>
+                  <h4 className="text-xs font-bold uppercase text-blue-600 mb-3 dark:text-blue-400">3. Organização de Módulos</h4>
+                  <ul className="space-y-3">
+                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
+                      <div className="h-5 w-5 shrink-0 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-[10px] font-bold">6</div>
+                      <p><strong>Financeiro Priorizado:</strong> O módulo Financeiro (Caixa e Contas a Pagar) foi movido para o topo da aba Gestão para acesso imediato.</p>
+                    </li>
+                  </ul>
+                </section>
+              </div>
+            </div>
           </div>
         );
       case 'danger':
@@ -2636,37 +3979,61 @@ function GestaoTab({
                 <h3 className="text-lg font-semibold text-rose-900 dark:text-rose-200">Ações de Limpeza</h3>
               </div>
               <p className="mb-6 text-sm text-rose-700 dark:text-rose-300">Estas ações são permanentes e não podem ser desfeitas. Use com cautela.</p>
-              <Button 
-                variant="danger" 
-                className="w-full py-6"
-                onClick={() => {
-                  setConfirmModal({
-                    isOpen: true,
-                    title: 'Limpar Histórico',
-                    message: 'Deseja realmente limpar todo o histórico de movimentações? Esta ação não pode ser desfeita.',
-                    onConfirm: async () => {
-                      try {
-                          const res = await fetch('/api/admin/reset-history', { 
-                              method: 'POST',
-                              headers: { 'x-app-user-id': currentUser.id }
-                          });
-                          const data = await res.json();
-                          if (data.success) {
-                              toast.success('Histórico limpo!');
-                              onResetHistory(); // Call parent callback if needed, but WS handles update
-                          } else {
-                              toast.error(data.message || 'Erro ao limpar histórico');
-                          }
-                      } catch (error) {
-                          toast.error('Erro de conexão');
+              <div className="flex flex-col gap-3">
+                <Button 
+                  variant="outline" 
+                  className="w-full"
+                  onClick={() => sendWS('HISTORY_GET_ALL', {})}
+                >
+                  <Download className="mr-2 h-4 w-4" /> Baixar Histórico (PDF)
+                </Button>
+                <Button 
+                  variant="danger" 
+                  className="w-full"
+                  onClick={() => {
+                    setConfirmModal({
+                      isOpen: true,
+                      title: 'Limpar Histórico',
+                      message: 'Deseja realmente limpar todo o histórico? Recomendamos baixar o backup antes.',
+                      onConfirm: async () => {
+                        try {
+                            const res = await fetch('/api/admin/reset-history', { 
+                                method: 'POST',
+                                headers: { 'x-app-user-id': currentUser.id }
+                            });
+                            const data = await res.json();
+                            if (data.success) {
+                                toast.success('Histórico limpo!');
+                                onResetHistory();
+                            } else {
+                                toast.error(data.message || 'Erro ao limpar histórico');
+                            }
+                        } catch (error) {
+                            toast.error('Erro de conexão');
+                        }
+                        setConfirmModal({ ...confirmModal, isOpen: false });
                       }
+                    });
+                  }}
+                >
+                  <Trash2 className="mr-2 h-4 w-4" /> Limpar Histórico
+                </Button>
+                <Button 
+                  variant="outline" 
+                  className="w-full text-rose-600 border-rose-200 hover:bg-rose-50"
+                  onClick={() => setConfirmModal({
+                    isOpen: true,
+                    title: 'Resetar Todas as Mesas',
+                    message: 'Esta ação irá liberar todas as mesas e excluir todos os pedidos ativos. Deseja continuar?',
+                    onConfirm: () => {
+                      sendWS('TABLES_RESET_ALL', { userId: currentUser?.id, username: currentUser?.username });
                       setConfirmModal({ ...confirmModal, isOpen: false });
                     }
-                  });
-                }}
-              >
-                <Trash2 className="mr-2 h-4 w-4" /> Limpar Histórico
-              </Button>
+                  })}
+                >
+                  <RefreshCw className="mr-2 h-4 w-4" /> Resetar Todas as Mesas
+                </Button>
+              </div>
             </section>
           </div>
         );
@@ -2681,6 +4048,7 @@ function GestaoTab({
       case 'categories': return 'Categorias e Grupos';
       case 'users': return 'Equipe e Acessos';
       case 'permissions': return 'Autorizações de Cargos';
+      case 'printer': return 'Impressora';
       case 'danger': return 'Ações de Limpeza';
       default: return '';
     }
@@ -2741,6 +4109,10 @@ function ConfigTab({
   setNotificationsEnabled, 
   soundEnabled, 
   setSoundEnabled, 
+  managePrinterHub,
+  setManagePrinterHub,
+  printerHubUserRestriction,
+  setPrinterHubUserRestriction,
   onRefreshUsers, 
   onAddUser, 
   onEditUser, 
@@ -2791,6 +4163,22 @@ function ConfigTab({
       <h2 className="text-2xl font-bold mb-6 dark:text-zinc-100">Configurações</h2>
       
       <button 
+        onClick={() => setActiveSection('general')}
+        className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
+      >
+        <div className="flex items-center gap-4">
+          <div className="p-2 rounded-xl bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
+            <Settings className="h-6 w-6" />
+          </div>
+          <div className="text-left">
+            <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Geral</h3>
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">Tema e acesso</p>
+          </div>
+        </div>
+        <ChevronRight className="h-5 w-5 text-zinc-400" />
+      </button>
+
+      <button 
         onClick={() => setActiveSection('account')}
         className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
       >
@@ -2807,16 +4195,16 @@ function ConfigTab({
       </button>
 
       <button 
-        onClick={() => setActiveSection('general')}
+        onClick={() => setActiveSection('printer')}
         className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
       >
         <div className="flex items-center gap-4">
-          <div className="p-2 rounded-xl bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
-            <Settings className="h-6 w-6" />
+          <div className="p-2 rounded-xl bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400">
+            <Printer className="h-6 w-6" />
           </div>
           <div className="text-left">
-            <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Geral</h3>
-            <p className="text-sm text-zinc-500 dark:text-zinc-400">Tema e acesso</p>
+            <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Impressora</h3>
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">Configurar hub de impressão automática</p>
           </div>
         </div>
         <ChevronRight className="h-5 w-5 text-zinc-400" />
@@ -2841,6 +4229,22 @@ function ConfigTab({
       )}
 
       <button 
+        onClick={() => setActiveSection('device_permissions')}
+        className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
+      >
+        <div className="flex items-center gap-4">
+          <div className="p-2 rounded-xl bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400">
+            <Smartphone className="h-6 w-6" />
+          </div>
+          <div className="text-left">
+            <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Permissões do Dispositivo</h3>
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">Notificações e sobreposição</p>
+          </div>
+        </div>
+        <ChevronRight className="h-5 w-5 text-zinc-400" />
+      </button>
+
+      <button 
         onClick={() => setActiveSection('whatsnew')}
         className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
       >
@@ -2850,7 +4254,7 @@ function ConfigTab({
           </div>
           <div className="text-left">
             <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Novidades</h3>
-            <p className="text-sm text-zinc-500 dark:text-zinc-400">O que mudou na versão 1.1.4</p>
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">O que mudou na versão 1.1.5</p>
           </div>
         </div>
         <ChevronRight className="h-5 w-5 text-zinc-400" />
@@ -2864,76 +4268,150 @@ function ConfigTab({
         return (
           <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
             <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
-              <h3 className="text-lg font-bold mb-4 dark:text-zinc-100">Novidades da Versão 1.1.4 beta</h3>
+              <h3 className="text-lg font-bold mb-4 dark:text-zinc-100">Novidades da Versão 1.1.5 beta</h3>
+              <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-6">Confira todas as melhorias implementadas desde a v1.1.3 beta:</p>
+              
               <div className="space-y-6">
-                <div className="flex gap-4">
-                  <div className="h-10 w-10 shrink-0 rounded-xl bg-emerald-100 text-emerald-600 flex items-center justify-center dark:bg-emerald-900/30 dark:text-emerald-400">
-                    <MoveRight className="h-5 w-5" />
+                <section>
+                  <h4 className="text-xs font-bold uppercase text-emerald-600 mb-3 dark:text-emerald-400">1. Operacional e Mesas</h4>
+                  <ul className="space-y-3">
+                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
+                      <div className="h-5 w-5 shrink-0 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center text-[10px] font-bold">1</div>
+                      <p><strong>Transferência de Itens:</strong> Agora é possível mover pedidos entre mesas com facilidade, incluindo fluxo de aprovação para garçons.</p>
+                    </li>
+                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
+                      <div className="h-5 w-5 shrink-0 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center text-[10px] font-bold">2</div>
+                      <p><strong>Tipos de Mesa Dinâmicos:</strong> Suporte a múltiplas áreas (Salão, Gramado, etc) com cores e ícones personalizados.</p>
+                    </li>
+                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
+                      <div className="h-5 w-5 shrink-0 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center text-[10px] font-bold">3</div>
+                      <p><strong>Interface Limpa:</strong> Ícones de área aparecem apenas na abertura da mesa. Numeração padronizada (01, 02...) para melhor organização.</p>
+                    </li>
+                  </ul>
+                </section>
+
+                <section>
+                  <h4 className="text-xs font-bold uppercase text-blue-600 mb-3 dark:text-blue-400">2. Financeiro e Pagamentos</h4>
+                  <ul className="space-y-3">
+                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
+                      <div className="h-5 w-5 shrink-0 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-[10px] font-bold">4</div>
+                      <p><strong>Calculadora Inteligente:</strong> Divisão automática de valores ao selecionar múltiplas formas de pagamento no fechamento.</p>
+                    </li>
+                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
+                      <div className="h-5 w-5 shrink-0 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-[10px] font-bold">5</div>
+                      <p><strong>Fluxo de Caixa:</strong> Melhorias na estabilidade do registro de transações e saldo em tempo real.</p>
+                    </li>
+                  </ul>
+                </section>
+
+                <section>
+                  <h4 className="text-xs font-bold uppercase text-purple-600 mb-3 dark:text-purple-400">3. Sistema e Performance</h4>
+                  <ul className="space-y-3">
+                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
+                      <div className="h-5 w-5 shrink-0 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center text-[10px] font-bold">6</div>
+                      <p><strong>Sincronização Instantânea:</strong> Novo motor WebSocket para atualizações em tempo real sem atrasos.</p>
+                    </li>
+                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
+                      <div className="h-5 w-5 shrink-0 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center text-[10px] font-bold">7</div>
+                      <p><strong>App Nativo:</strong> Estrutura preparada para publicação em Android e iOS via Capacitor.</p>
+                    </li>
+                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
+                      <div className="h-5 w-5 shrink-0 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center text-[10px] font-bold">8</div>
+                      <p><strong>Correções de Login:</strong> Resolvido problema de persistência de senha e acesso de usuários específicos.</p>
+                    </li>
+                  </ul>
+                </section>
+
+                <div className="p-4 rounded-xl bg-zinc-50 border border-zinc-100 dark:bg-zinc-800/50 dark:border-zinc-700">
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400 text-center">As novidades detalhadas do módulo de Gestão (Cargos, Áreas, etc) estão disponíveis na aba Gestão.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      case 'device_permissions':
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+              <h3 className="text-lg font-bold mb-4 dark:text-zinc-100">Permissões do Dispositivo</h3>
+              <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-6">Ative as permissões necessárias para o funcionamento pleno no smartphone:</p>
+              
+              <div className="space-y-4">
+                <div className="flex items-center justify-between p-4 rounded-xl bg-zinc-50 border border-zinc-100 dark:bg-zinc-800/50 dark:border-zinc-700">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
+                      <Bell className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <h4 className="font-semibold dark:text-zinc-100">Notificações</h4>
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400">Alertas de novos pedidos e chamados</p>
+                    </div>
                   </div>
-                  <div>
-                    <h4 className="font-bold dark:text-zinc-200">Transferência de Mesas</h4>
-                    <p className="text-sm text-zinc-500 dark:text-zinc-400">Agora você pode transferir itens entre mesas. Usuários autorizados podem realizar a transferência diretamente, enquanto outros podem solicitar a aprovação de um administrador.</p>
-                  </div>
+                  <button 
+                    onClick={() => {
+                      if (!("Notification" in window)) {
+                        toast.error("Este navegador não suporta notificações.");
+                        return;
+                      }
+                      Notification.requestPermission().then(permission => {
+                        if (permission === "granted") {
+                          toast.success("Notificações ativadas!");
+                        } else {
+                          toast.error("Permissão de notificação negada.");
+                        }
+                      });
+                    }}
+                    className="px-4 py-2 bg-emerald-500 text-white rounded-xl font-medium text-sm hover:bg-emerald-600 transition-colors"
+                  >
+                    Ativar
+                  </button>
                 </div>
 
-                <div className="flex gap-4">
-                  <div className="h-10 w-10 shrink-0 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center dark:bg-blue-900/30 dark:text-blue-400">
-                    <Trees className="h-5 w-5" />
+                <div className="flex items-center justify-between p-4 rounded-xl bg-zinc-50 border border-zinc-100 dark:bg-zinc-800/50 dark:border-zinc-700">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400">
+                      <Layers className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <h4 className="font-semibold dark:text-zinc-100">Sobreposição de Apps</h4>
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400">Manter app visível sobre outros</p>
+                    </div>
                   </div>
-                  <div>
-                    <h4 className="font-bold dark:text-zinc-200">Tipos de Mesa (Salão vs Gramado)</h4>
-                    <p className="text-sm text-zinc-500 dark:text-zinc-400">As mesas agora podem ser identificadas como Salão ou Gramado ao serem abertas, com cores e etiquetas exclusivas para facilitar a organização visual.</p>
-                  </div>
+                  <button 
+                    onClick={() => {
+                      toast("Esta permissão deve ser ativada nas configurações do Android (Exibir sobre outros aplicativos).", { icon: 'ℹ️' });
+                    }}
+                    className="px-4 py-2 bg-zinc-200 text-zinc-700 rounded-xl font-medium text-sm hover:bg-zinc-300 transition-colors dark:bg-zinc-700 dark:text-zinc-200"
+                  >
+                    Como Ativar
+                  </button>
                 </div>
 
-                <div className="flex gap-4">
-                  <div className="h-10 w-10 shrink-0 rounded-xl bg-purple-100 text-purple-600 flex items-center justify-center dark:bg-purple-900/30 dark:text-purple-400">
-                    <Database className="h-5 w-5" />
+                <div className="flex items-center justify-between p-4 rounded-xl bg-zinc-50 border border-zinc-100 dark:bg-zinc-800/50 dark:border-zinc-700">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400">
+                      <Battery className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <h4 className="font-semibold dark:text-zinc-100">Otimização de Bateria</h4>
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400">Evitar que o sistema feche o app</p>
+                    </div>
                   </div>
-                  <div>
-                    <h4 className="font-bold dark:text-zinc-200">Aba Gestão Reorganizada</h4>
-                    <p className="text-sm text-zinc-500 dark:text-zinc-400">A aba de "Gestão" foi movida para o final da navegação para facilitar o acesso. As seções foram agrupadas de forma mais intuitiva: Cardápio (Produtos, Categorias) e Administrativo (Equipe, Autorizações).</p>
-                  </div>
+                  <button 
+                    onClick={() => {
+                      toast("Desative a otimização de bateria para este app nas configurações do seu smartphone.", { icon: 'ℹ️' });
+                    }}
+                    className="px-4 py-2 bg-zinc-200 text-zinc-700 rounded-xl font-medium text-sm hover:bg-zinc-300 transition-colors dark:bg-zinc-700 dark:text-zinc-200"
+                  >
+                    Configurar
+                  </button>
                 </div>
 
-                <div className="flex gap-4">
-                  <div className="h-10 w-10 shrink-0 rounded-xl bg-amber-100 text-amber-600 flex items-center justify-center dark:bg-amber-900/30 dark:text-amber-400">
-                    <RefreshCw className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <h4 className="font-bold dark:text-zinc-200">Acesso Rápido à Sincronização</h4>
-                    <p className="text-sm text-zinc-500 dark:text-zinc-400">O botão de sincronização agora está no cabeçalho para acesso imediato. O status da nuvem foi movido para a barra lateral.</p>
-                  </div>
-                </div>
-
-                <div className="flex gap-4">
-                  <div className="h-10 w-10 shrink-0 rounded-xl bg-purple-100 text-purple-600 flex items-center justify-center dark:bg-purple-900/30 dark:text-purple-400">
-                    <Hash className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <h4 className="font-bold dark:text-zinc-200">Formatação de Mesas</h4>
-                    <p className="text-sm text-zinc-500 dark:text-zinc-400">A numeração das mesas agora segue o padrão de dois dígitos (01, 02, 03...), melhorando a ordenação e visualização nos filtros.</p>
-                  </div>
-                </div>
-
-                <div className="flex gap-4">
-                  <div className="h-10 w-10 shrink-0 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center dark:bg-rose-900/30 dark:text-rose-400">
-                    <ShieldCheck className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <h4 className="font-bold dark:text-zinc-200">Correções de Login e Estabilidade</h4>
-                    <p className="text-sm text-zinc-500 dark:text-zinc-400">Corrigido o problema de login que impedia o acesso de alguns usuários. A sincronização de senhas entre dispositivos e nuvem foi aprimorada para garantir persistência.</p>
-                  </div>
-                </div>
-
-                <div className="flex gap-4">
-                  <div className="h-10 w-10 shrink-0 rounded-xl bg-indigo-100 text-indigo-600 flex items-center justify-center dark:bg-indigo-900/30 dark:text-indigo-400">
-                    <History className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <h4 className="font-bold dark:text-zinc-200">Histórico Inteligente</h4>
-                    <p className="text-sm text-zinc-500 dark:text-zinc-400">O histórico agora permite aprovar ou recusar solicitações de transferência diretamente. A coluna de mesas foi removida para uma visualização mais limpa, com as informações integradas aos detalhes.</p>
-                  </div>
+                <div className="p-4 rounded-xl bg-blue-50 border border-blue-100 dark:bg-blue-900/20 dark:border-blue-800">
+                  <p className="text-xs text-blue-700 dark:text-blue-400 flex items-start gap-2">
+                    <Info className="h-4 w-4 shrink-0 mt-0.5" />
+                    Para uma experiência completa, recomendamos instalar o app via navegador (PWA) ou usar a versão nativa compilada.
+                  </p>
                 </div>
               </div>
             </div>
@@ -3281,9 +4759,9 @@ function HistoryTab({ events, canMarkRead, onMarkRead, transferRequests = [], on
   const [tableFilter, setTableFilter] = useState('');
 
   const filteredEvents = events.filter(event => {
-    const matchesUser = userFilter === '' || event.username.toLowerCase().includes(userFilter.toLowerCase());
-    const matchesAction = actionFilter === '' || event.action.includes(actionFilter);
-    const matchesTable = tableFilter === '' || (event.table_id && event.table_id.toString() === tableFilter) || event.details.toLowerCase().includes(`mesa ${formatTableNumber(tableFilter)}`);
+    const matchesUser = userFilter === '' || (event.username && event.username.toLowerCase().includes(userFilter.toLowerCase()));
+    const matchesAction = actionFilter === '' || (event.action && event.action.includes(actionFilter));
+    const matchesTable = tableFilter === '' || (event.table_id && event.table_id.toString() === tableFilter) || (event.details?.toLowerCase().includes(`mesa ${formatTableNumber(tableFilter)}`));
     return matchesUser && matchesAction && matchesTable;
   });
 
@@ -3299,7 +4777,7 @@ function HistoryTab({ events, canMarkRead, onMarkRead, transferRequests = [], on
           onChange={(e) => setActionFilter(e.target.value)}
         >
           <option value="">Todas Ações</option>
-          {uniqueActions.map((a: any) => <option key={a} value={a}>{a.replace('_', ' ')}</option>)}
+          {uniqueActions.map((a: any) => a ? <option key={a} value={a}>{String(a).replace('_', ' ')}</option> : null)}
         </select>
         <select 
           className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100"
@@ -3362,7 +4840,7 @@ function HistoryTab({ events, canMarkRead, onMarkRead, transferRequests = [], on
                           <span className="font-medium">
                             {(() => {
                               // Try to highlight quantity (e.g., "1x ")
-                              const match = event.details.match(/^(\d+x) (.*)$/);
+                              const match = event.details?.match(/^(\d+x) (.*)$/);
                               if (match) {
                                 return (
                                   <>
@@ -3371,7 +4849,7 @@ function HistoryTab({ events, canMarkRead, onMarkRead, transferRequests = [], on
                                 );
                               }
                               
-                              return event.details;
+                              return event.details || '';
                             })()}
                           </span>
                         </div>
@@ -3403,7 +4881,7 @@ function HistoryTab({ events, canMarkRead, onMarkRead, transferRequests = [], on
                         event.action === 'NOVO_PEDIDO' ? "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-800" :
                         "bg-zinc-50 text-zinc-700 border-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:border-zinc-700"
                       )}>
-                        {event.action.replace('_', ' ')}
+                        {event.action ? String(event.action).replace('_', ' ') : 'Desconhecida'}
                       </span>
                     </td>
                     <td className="px-3 py-3 sm:px-6 sm:py-4">
@@ -3422,7 +4900,11 @@ function HistoryTab({ events, canMarkRead, onMarkRead, transferRequests = [], on
   );
 }
 
-function AddUserModal({ isOpen, onClose, onSuccess, currentUser }: any) {
+function AddUserModal({ isOpen, onClose, onSuccess, currentUser, settings }: any) {
+  const defaultRoles = ['admin', 'waiter', 'kitchen', 'caixa'];
+  const customRoles = settings?.custom_roles ? JSON.parse(settings.custom_roles) : [];
+  const allRoles = Array.from(new Set([...defaultRoles, ...customRoles])).sort((a, b) => a.localeCompare(b));
+
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Novo Usuário">
       <form onSubmit={async (e) => {
@@ -3456,10 +4938,11 @@ function AddUserModal({ isOpen, onClose, onSuccess, currentUser }: any) {
         <div className="space-y-2">
           <label className="text-sm font-medium dark:text-zinc-300">Cargo</label>
           <select name="role" className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100">
-            <option value="waiter">Garçom</option>
-            <option value="kitchen">Cozinha</option>
-            <option value="caixa">Caixa</option>
-            <option value="admin">Admin</option>
+            {allRoles.map(r => (
+              <option key={r} value={r}>
+                {r === 'waiter' ? 'Garçom' : r === 'kitchen' ? 'Cozinha' : r === 'caixa' ? 'Caixa' : r.charAt(0).toUpperCase() + r.slice(1)}
+              </option>
+            ))}
             {currentUser?.role === 'host' && <option value="host">Host</option>}
           </select>
         </div>
@@ -3469,8 +4952,12 @@ function AddUserModal({ isOpen, onClose, onSuccess, currentUser }: any) {
   );
 }
 
-function EditUserModal({ isOpen, onClose, user, onSuccess, currentUser }: any) {
+function EditUserModal({ isOpen, onClose, user, onSuccess, currentUser, settings }: any) {
   if (!user) return null;
+
+  const defaultRoles = ['admin', 'waiter', 'kitchen', 'caixa'];
+  const customRoles = settings?.custom_roles ? JSON.parse(settings.custom_roles) : [];
+  const allRoles = Array.from(new Set([...defaultRoles, ...customRoles])).sort((a, b) => a.localeCompare(b));
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title={`Editar Usuário: ${user.username}`}>
@@ -3513,10 +5000,11 @@ function EditUserModal({ isOpen, onClose, user, onSuccess, currentUser }: any) {
             disabled={user.username === 'deckserrinha'}
             className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <option value="waiter">Garçom</option>
-            <option value="kitchen">Cozinha</option>
-            <option value="caixa">Caixa</option>
-            <option value="admin">Admin</option>
+            {allRoles.map(r => (
+              <option key={r} value={r}>
+                {r === 'waiter' ? 'Garçom' : r === 'kitchen' ? 'Cozinha' : r === 'caixa' ? 'Caixa' : r.charAt(0).toUpperCase() + r.slice(1)}
+              </option>
+            ))}
             {(currentUser?.role === 'host' || user.role === 'host') && <option value="host">Host</option>}
           </select>
           {user.username === 'deckserrinha' && (
@@ -3695,6 +5183,7 @@ function OrderModal({ isOpen, onClose, menu, categories = [], details = [], onSe
   const [search, setSearch] = useState("");
   const [editingObservation, setEditingObservation] = useState<string | null>(null);
   const [observationText, setObservationText] = useState("");
+  const [isConfirmingSend, setIsConfirmingSend] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -3708,10 +5197,13 @@ function OrderModal({ isOpen, onClose, menu, categories = [], details = [], onSe
   }, [isOpen]);
 
   const addToCart = (item: any) => {
+    vibrate(30);
     setCart(prev => {
       const existing = prev.find(i => i.id === item.id);
       if (existing) {
-        return prev.map(i => i.id === item.id ? { ...i, quantity: i.quantity + 1 } : i);
+        // Move to the end so it appears at top when reversed
+        const filtered = prev.filter(i => i.id !== item.id);
+        return [...filtered, { ...existing, quantity: existing.quantity + 1 }];
       }
       return [...prev, { ...item, quantity: 1 }];
     });
@@ -3922,9 +5414,16 @@ function OrderModal({ isOpen, onClose, menu, categories = [], details = [], onSe
         </div>
 
         <div className="border-t border-zinc-100 pt-4 space-y-4">
-          <h4 className="text-xs font-bold uppercase text-zinc-400">Carrinho</h4>
+          <h4 className="text-xs font-bold uppercase text-zinc-400 flex items-center justify-between">
+            <span>Carrinho</span>
+            {cart.length > 0 && (
+              <span className="bg-emerald-100 text-emerald-600 px-2 py-0.5 rounded-full text-[10px]">
+                {cart.reduce((acc, item) => acc + item.quantity, 0)} {cart.reduce((acc, item) => acc + item.quantity, 0) === 1 ? 'item' : 'itens'}
+              </span>
+            )}
+          </h4>
           <div className="space-y-2 max-h-40 overflow-y-auto overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
-            {cart.map(item => (
+            {[...cart].reverse().map(item => (
               <div key={item.id} className="flex flex-col gap-2 rounded-lg bg-zinc-50 p-2 text-sm dark:bg-zinc-800">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
@@ -4013,15 +5512,858 @@ function OrderModal({ isOpen, onClose, menu, categories = [], details = [], onSe
             disabled={cart.length === 0} 
             className="w-full" 
             onClick={() => {
-              vibrate([50, 100, 50]);
-              onSend(cart.map(i => ({ menuItemId: i.id, quantity: i.quantity, observation: i.observation })));
-              onClose();
+              setIsConfirmingSend(true);
             }}
           >
             Enviar Pedido
           </Button>
         </div>
       </div>
+
+      <Modal
+        isOpen={isConfirmingSend}
+        onClose={() => setIsConfirmingSend(false)}
+        title="Confirmar Pedido"
+      >
+        <div className="space-y-6">
+          <div className="space-y-4">
+            <p className="text-zinc-600 dark:text-zinc-400">Tem certeza que deseja enviar estes {cart.reduce((acc, i) => acc + i.quantity, 0)} itens?</p>
+            <div className="max-h-40 overflow-y-auto border rounded-xl divide-y bg-zinc-50 dark:bg-zinc-900/50 dark:border-zinc-800">
+              {[...cart].reverse().map(item => (
+                <div key={item.id} className="p-3 text-sm flex justify-between">
+                  <span>{item.quantity}x {item.name}</span>
+                  <span className="text-zinc-500 font-medium">R$ {(item.price * item.quantity).toFixed(2)}</span>
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-between items-center text-lg font-bold border-t pt-4 px-2">
+              <span>TOTAL</span>
+              <span className="text-emerald-600">R$ {cart.reduce((acc, i) => acc + (i.price * i.quantity), 0).toFixed(2)}</span>
+            </div>
+          </div>
+          <div className="flex justify-end gap-3">
+            <Button variant="outline" onClick={() => setIsConfirmingSend(false)}>Cancelar</Button>
+            <Button 
+              className="bg-emerald-600 hover:bg-emerald-700" 
+              onClick={() => {
+                vibrate([50, 100, 50]);
+                onSend(cart.map(i => ({ 
+                  menuItemId: i.id, 
+                  quantity: i.quantity, 
+                  observation: i.observation,
+                  name: i.name,
+                  print_enabled: i.print_enabled
+                })));
+                setIsConfirmingSend(false);
+                onClose();
+              }}
+            >
+              Confirmar e Enviar
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </Modal>
+  );
+}
+
+function PrinterSettings({ 
+  settings, 
+  sendWS, 
+  managePrinterHub, 
+  setManagePrinterHub, 
+  printerHubUserRestriction, 
+  setPrinterHubUserRestriction, 
+  users 
+}: any) {
+  const [isSearching, setIsSearching] = useState(false);
+  const [foundPrinters, setFoundPrinters] = useState<any[]>([]);
+
+  const handleSearch = () => {
+    setIsSearching(true);
+    setFoundPrinters([]);
+    
+    // Simulate printer discovery
+    setTimeout(() => {
+      const mockPrinters = [
+        { id: '1', name: 'Impressora Térmica 80mm (Cozinha)', address: '192.168.1.101', type: 'network' },
+        { id: '2', name: 'Impressora Térmica 58mm (Balcão)', address: '192.168.1.102', type: 'network' },
+        { id: '3', name: 'Impressora USB (Local)', address: 'USB001', type: 'usb' }
+      ];
+      setFoundPrinters(mockPrinters);
+      setIsSearching(false);
+      toast.success('Busca concluída! Selecione uma impressora da lista.');
+    }, 2000);
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="space-y-4 border-b border-zinc-200 dark:border-zinc-800 pb-6">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className={cn("p-2 rounded-lg", managePrinterHub ? "bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400" : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400")}>
+              <Printer className="h-5 w-5" />
+            </div>
+            <div>
+              <p className="font-medium dark:text-zinc-200">Central de Impressão (Neste Aparelho)</p>
+              <p className="text-xs text-zinc-500 max-w-sm">Torne este dispositivo o responsável por imprimir automaticamente os pedidos de todos os usuários.</p>
+            </div>
+          </div>
+          <button 
+            onClick={() => setManagePrinterHub(!managePrinterHub)}
+            className={cn(
+              "relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2",
+              managePrinterHub ? 'bg-emerald-600' : 'bg-zinc-200'
+            )}
+          >
+            <span className={cn(
+              "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
+              managePrinterHub ? 'translate-x-6' : 'translate-x-1'
+            )} />
+          </button>
+        </div>
+
+        {managePrinterHub && (
+          <div className="p-4 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-100 dark:border-zinc-800 space-y-4 animate-in fade-in slide-in-from-top-2">
+            <div className="space-y-2">
+              <label className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Restringir Hub para Usuário</label>
+              <select 
+                value={printerHubUserRestriction}
+                onChange={(e) => setPrinterHubUserRestriction(e.target.value)}
+                className="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg h-10 px-3 text-sm focus:ring-2 focus:ring-emerald-500 outline-none transition-all dark:text-zinc-200"
+              >
+                <option value="all">Qualquer usuário logado</option>
+                {users?.map((u: any) => (
+                  <option key={u.id} value={u.username}>{u.username} ({u.role})</option>
+                ))}
+              </select>
+            </div>
+            
+            <div className="p-3 rounded-lg bg-amber-50 border border-amber-100 dark:bg-amber-900/20 dark:border-amber-800 text-[10px] text-amber-800 dark:text-amber-300 leading-tight">
+              <p className="font-bold mb-1 flex items-center gap-1">
+                <Info className="h-3 w-3" /> ATENÇÃO
+              </p>
+              A impressão automática só ocorrerá se o usuário selecionado acima estiver utilizando este aparelho. Útil caso precise alternar entre funções no mesmo tablet.
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <Search className="h-5 w-5 text-emerald-600" />
+          <h3 className="text-lg font-semibold dark:text-zinc-100">Busca de Impressoras (Rede)</h3>
+        </div>
+        <Button 
+          variant="outline" 
+          size="sm" 
+          onClick={handleSearch}
+          disabled={isSearching}
+          className="gap-2"
+        >
+          {isSearching ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+          Buscar Impressoras
+        </Button>
+      </div>
+      
+      {foundPrinters.length > 0 && (
+        <div className="p-4 rounded-xl border-2 border-emerald-100 bg-emerald-50 dark:bg-emerald-900/10 dark:border-emerald-800/30 space-y-3">
+          <h4 className="text-xs font-bold text-emerald-700 dark:text-emerald-400 uppercase tracking-wider">Impressoras Encontradas</h4>
+          <div className="grid gap-2">
+            {foundPrinters.map(p => (
+              <button
+                key={p.id}
+                onClick={() => {
+                  const form = document.getElementById('printer-form') as HTMLFormElement;
+                  if (form) {
+                    (form.elements.namedItem('printer_type') as HTMLSelectElement).value = p.type;
+                    (form.elements.namedItem('printer_address') as HTMLInputElement).value = p.address;
+                  }
+                  toast.success(`${p.name} selecionada!`);
+                }}
+                className="flex items-center justify-between p-3 rounded-lg bg-white dark:bg-zinc-800 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-800/50 transition-colors text-left"
+              >
+                <div>
+                  <p className="text-sm font-bold text-zinc-900 dark:text-zinc-100">{p.name}</p>
+                  <p className="text-xs text-zinc-500">{p.address} ({p.type.toUpperCase()})</p>
+                </div>
+                <ChevronRight className="h-4 w-4 text-emerald-500" />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      
+      <form id="printer-form" onSubmit={(e) => {
+        e.preventDefault();
+        const formData = new FormData(e.currentTarget);
+        const data: any = {};
+        formData.forEach((value, key) => data[key] = value);
+        sendWS('SETTINGS_UPDATE', data);
+        toast.success('Configurações de impressão salvas!');
+      }} className="space-y-4">
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="space-y-2">
+            <label className="text-sm font-medium dark:text-zinc-400">Tipo de Impressora</label>
+            <select name="printer_type" defaultValue={settings.printer_type || 'network'} className="w-full rounded-lg border border-zinc-200 p-2 text-sm dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-200">
+              <option value="network">Rede (IP)</option>
+              <option value="usb">USB (Nativo)</option>
+              <option value="bluetooth">Bluetooth</option>
+            </select>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium dark:text-zinc-400">Endereço IP / Porta</label>
+            <Input name="printer_address" defaultValue={settings.printer_address || '192.168.1.100'} placeholder="Ex: 192.168.1.100" />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium dark:text-zinc-400">Largura do Papel (mm)</label>
+            <select name="printer_width" defaultValue={settings.printer_width || '80'} className="w-full rounded-lg border border-zinc-200 p-2 text-sm dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-200">
+              <option value="80">80mm</option>
+              <option value="58">58mm</option>
+            </select>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium dark:text-zinc-400">Tamanho da Fonte</label>
+            <select name="printer_font_size" defaultValue={settings.printer_font_size || 'medium'} className="w-full rounded-lg border border-zinc-200 p-2 text-sm dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-200">
+              <option value="small">Pequena</option>
+              <option value="medium">Média</option>
+              <option value="large">Grande</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-sm font-medium dark:text-zinc-400">Cabeçalho do Cupom</label>
+          <textarea name="printer_header" defaultValue={settings.printer_header || 'DECK SERRINHA\nObrigado pela preferência!'} className="w-full rounded-lg border border-zinc-200 p-2 text-sm dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-200 h-20" />
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-sm font-medium dark:text-zinc-400">Rodapé do Cupom</label>
+          <textarea name="printer_footer" defaultValue={settings.printer_footer || 'Volte sempre!'} className="w-full rounded-lg border border-zinc-200 p-2 text-sm dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-200 h-20" />
+        </div>
+
+        <Button type="submit" className="w-full">Salvar Configurações</Button>
+      </form>
+    </div>
+  );
+}
+
+function AccountsPayableSection({ accountsPayable, sendWS, cashierStatus, currentUser }: any) {
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+
+  const pendingAccounts = accountsPayable.filter((a: any) => a.status === 'pending');
+  const paidAccounts = accountsPayable.filter((a: any) => a.status === 'paid');
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <CreditCard className="h-5 w-5 text-rose-600" />
+          <h3 className="text-lg font-semibold dark:text-zinc-100">Contas a Pagar</h3>
+        </div>
+        <Button onClick={() => setIsAddModalOpen(true)} size="sm" className="gap-2">
+          <Plus className="h-4 w-4" /> Nova Conta
+        </Button>
+      </div>
+
+      <div className="grid gap-6 md:grid-cols-2">
+        <div className="space-y-4">
+          <h4 className="text-sm font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-2">
+            <Clock className="h-4 w-4" /> Pendentes ({pendingAccounts.length})
+          </h4>
+          <div className="space-y-3">
+            {pendingAccounts.length === 0 ? (
+              <div className="p-8 text-center border-2 border-dashed border-zinc-100 rounded-2xl text-zinc-400 text-sm">
+                Nenhuma conta pendente
+              </div>
+            ) : (
+              pendingAccounts.map((account: any) => (
+                <div key={account.id} className="p-4 rounded-xl border border-zinc-200 bg-white dark:bg-zinc-900 dark:border-zinc-800 space-y-3">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <p className="font-bold text-zinc-900 dark:text-zinc-100">{account.description}</p>
+                      <p className="text-xs text-zinc-500">{account.category}</p>
+                    </div>
+                    <p className="font-black text-rose-600">R$ {account.amount.toFixed(2)}</p>
+                  </div>
+                  <div className="flex items-center justify-between pt-2 border-t border-zinc-50 dark:border-zinc-800">
+                    <p className="text-xs text-zinc-500">Vencimento: {format(new Date(account.due_date), 'dd/MM/yyyy')}</p>
+                    <div className="flex gap-2">
+                      <button 
+                        onClick={() => {
+                          if (confirm('Deseja excluir esta conta?')) {
+                            sendWS('ACCOUNTS_PAYABLE_DELETE', { id: account.id });
+                          }
+                        }}
+                        className="p-1.5 text-zinc-400 hover:text-rose-600 transition-colors"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                      <Button 
+                        size="sm" 
+                        variant="outline" 
+                        className="h-8 text-xs gap-1"
+                        onClick={() => {
+                          if (confirm(`Confirmar pagamento de R$ ${account.amount.toFixed(2)}?`)) {
+                            sendWS('ACCOUNTS_PAYABLE_PAY', { 
+                              id: account.id, 
+                              sessionId: cashierStatus.status === 'open' ? cashierStatus.sessionId : null,
+                              userId: currentUser.id,
+                              username: currentUser.username
+                            });
+                            if (cashierStatus.status !== 'open') {
+                              toast('Conta marcada como paga, mas não registrada no caixa (caixa fechado).', { icon: 'ℹ️' });
+                            } else {
+                              toast.success('Conta paga e registrada no caixa!');
+                            }
+                          }
+                        }}
+                      >
+                        <Check className="h-3 w-3" /> Pagar
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <h4 className="text-sm font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4" /> Pagas ({paidAccounts.length})
+          </h4>
+          <div className="space-y-3 opacity-60">
+            {paidAccounts.slice(0, 5).map((account: any) => (
+              <div key={account.id} className="p-3 rounded-xl border border-zinc-100 bg-zinc-50 dark:bg-zinc-800/30 dark:border-zinc-800 flex justify-between items-center">
+                <div>
+                  <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">{account.description}</p>
+                  <p className="text-[10px] text-zinc-500">Pago em: {format(new Date(account.timestamp), 'dd/MM/yyyy')}</p>
+                </div>
+                <p className="text-sm font-bold text-zinc-500">R$ {account.amount.toFixed(2)}</p>
+              </div>
+            ))}
+            {paidAccounts.length > 5 && (
+              <p className="text-center text-[10px] text-zinc-400">Mostrando as últimas 5 contas pagas</p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {isAddModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="w-full max-w-md bg-white dark:bg-zinc-900 rounded-3xl shadow-2xl overflow-hidden"
+          >
+            <div className="p-6 border-b border-zinc-100 dark:border-zinc-800 flex items-center justify-between">
+              <h3 className="text-xl font-bold dark:text-zinc-100">Nova Conta a Pagar</h3>
+              <button onClick={() => setIsAddModalOpen(false)} className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-full transition-colors">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              const formData = new FormData(e.currentTarget);
+              sendWS('ACCOUNTS_PAYABLE_ADD', {
+                description: formData.get('description'),
+                amount: parseFloat(formData.get('amount') as string),
+                dueDate: formData.get('due_date'),
+                category: formData.get('category')
+              });
+              setIsAddModalOpen(false);
+              toast.success('Conta adicionada!');
+            }} className="p-6 space-y-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium dark:text-zinc-400">Descrição</label>
+                <Input name="description" placeholder="Ex: Aluguel, Fornecedor de Bebidas" required />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium dark:text-zinc-400">Valor (R$)</label>
+                  <Input name="amount" type="number" step="0.01" placeholder="0,00" required />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium dark:text-zinc-400">Vencimento</label>
+                  <Input name="due_date" type="date" required />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium dark:text-zinc-400">Categoria</label>
+                <select name="category" className="w-full rounded-xl border border-zinc-200 p-2.5 text-sm dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-200">
+                  <option value="Fixo">Custo Fixo</option>
+                  <option value="Variável">Custo Variável</option>
+                  <option value="Fornecedor">Fornecedor</option>
+                  <option value="Pessoal">Pessoal / Salários</option>
+                  <option value="Outros">Outros</option>
+                </select>
+              </div>
+              <div className="pt-4 flex gap-3">
+                <Button type="button" variant="outline" className="flex-1" onClick={() => setIsAddModalOpen(false)}>Cancelar</Button>
+                <Button type="submit" className="flex-1">Salvar Conta</Button>
+              </div>
+            </form>
+          </motion.div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FinanceSection({ currentUser, cashierStatus, cashierTransactions = [], sendWS, hasPermission }: any) {
+  const [initialBalance, setInitialBalance] = useState('');
+  const [sangriaAmount, setSangriaAmount] = useState('');
+  const [sangriaDesc, setSangriaDesc] = useState('');
+  const [reforcoAmount, setReforcoAmount] = useState('');
+  const [reforcoDesc, setReforcoDesc] = useState('');
+  const [transactionType, setTransactionType] = useState<'income' | 'expense'>('expense');
+  const [showDetails, setShowDetails] = useState(false);
+  const [isClosingModalOpen, setIsClosingModalOpen] = useState(false);
+
+  const handleOpenCashier = (e: React.FormEvent) => {
+    e.preventDefault();
+    sendWS('CASHIER_OPEN', { 
+      userId: currentUser.id, 
+      username: currentUser.username, 
+      initialBalance: parseFloat(initialBalance) || 0 
+    });
+    toast.success('Caixa aberto!');
+  };
+
+  const summary = cashierTransactions.reduce((acc: any, t: any) => {
+    if (t.type === 'sale' || t.type === 'income') {
+      acc.income += t.amount;
+      const method = normalizeMethod(t.method);
+      
+      acc.byMethod[method] = (acc.byMethod[method] || 0) + t.amount;
+    } else if (t.type === 'expense') {
+      acc.expense += t.amount;
+    }
+    return acc;
+  }, { income: 0, expense: 0, byMethod: {} });
+
+  const currentBalance = (cashierStatus.initialBalance || 0) + summary.income - summary.expense;
+
+  const handleCloseCashier = () => {
+    const billing = {
+      total: summary.income,
+      byMethod: summary.byMethod,
+      expenses: summary.expense
+    };
+
+    const finalBalance = currentBalance;
+    
+    // Generate PDF automatically for records
+    generateCashierPDF({ 
+      opened_at: new Date().toISOString(), 
+      opened_by_name: currentUser.username, 
+      initial_balance: cashierStatus.initialBalance || 0 
+    }, cashierTransactions, billing);
+    
+    sendWS('CASHIER_CLOSE', { 
+      userId: currentUser.id, 
+      username: currentUser.username, 
+      sessionId: cashierStatus.sessionId,
+      finalBalance
+    });
+    
+    setIsClosingModalOpen(false);
+    toast.success('Caixa fechado com sucesso!');
+  };
+
+  const handleSangria = (e: React.FormEvent) => {
+    e.preventDefault();
+    sendWS('CASHIER_TRANSACTION', {
+      sessionId: cashierStatus.sessionId,
+      type: 'expense',
+      amount: parseFloat(sangriaAmount),
+      description: sangriaDesc,
+      method: 'dinheiro',
+      userId: currentUser.id,
+      username: currentUser.username
+    });
+    setSangriaAmount('');
+    setSangriaDesc('');
+    toast.success('Sangria realizada!');
+  };
+
+  const handleReforco = (e: React.FormEvent) => {
+    e.preventDefault();
+    sendWS('CASHIER_TRANSACTION', {
+      sessionId: cashierStatus.sessionId,
+      type: 'income',
+      amount: parseFloat(reforcoAmount),
+      description: reforcoDesc,
+      method: 'dinheiro',
+      userId: currentUser.id,
+      username: currentUser.username
+    });
+    setReforcoAmount('');
+    setReforcoDesc('');
+    toast.success('Reforço realizado!');
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <DollarSign className="h-5 w-5 text-emerald-600" />
+          <h3 className="text-lg font-semibold dark:text-zinc-100">Financeiro e Caixa</h3>
+        </div>
+        <div className={cn(
+          "px-3 py-1 rounded-full text-xs font-bold uppercase",
+          cashierStatus.status === 'open' ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
+        )}>
+          Caixa {cashierStatus.status === 'open' ? 'Aberto' : 'Fechado'}
+        </div>
+      </div>
+
+      {cashierStatus.status === 'closed' ? (
+        <div className="rounded-xl border border-zinc-200 p-6 bg-zinc-50 dark:bg-zinc-800/50 dark:border-zinc-700">
+          <h4 className="font-medium mb-4 dark:text-zinc-200">Abrir Novo Caixa</h4>
+          <form onSubmit={handleOpenCashier} className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm text-zinc-500">Valor Inicial (Troco)</label>
+              <Input 
+                type="number" 
+                step="0.01" 
+                value={initialBalance} 
+                onChange={(e) => setInitialBalance(e.target.value)} 
+                placeholder="R$ 0,00"
+                required
+              />
+            </div>
+            <Button type="submit" className="w-full">Abrir Caixa</Button>
+          </form>
+        </div>
+      ) : (
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="rounded-xl border border-zinc-200 p-4 bg-white dark:bg-zinc-900 dark:border-zinc-800">
+              <h4 className="text-xs font-medium text-zinc-500 mb-1">Saldo Inicial</h4>
+              <p className="text-xl font-bold text-zinc-900 dark:text-zinc-100">R$ {cashierStatus.initialBalance?.toFixed(2)}</p>
+            </div>
+            <div className="rounded-xl border border-zinc-200 p-4 bg-white dark:bg-zinc-900 dark:border-zinc-800">
+              <h4 className="text-xs font-medium text-zinc-500 mb-1">Entradas (Vendas)</h4>
+              <p className="text-xl font-bold text-emerald-600">R$ {summary.income.toFixed(2)}</p>
+            </div>
+            <div className="rounded-xl border border-zinc-200 p-4 bg-white dark:bg-zinc-900 dark:border-zinc-800">
+              <h4 className="text-xs font-medium text-zinc-500 mb-1">Saídas (Sangrias)</h4>
+              <p className="text-xl font-bold text-rose-600">R$ {summary.expense.toFixed(2)}</p>
+            </div>
+          </div>
+
+          <div className="rounded-2xl bg-gradient-to-br from-emerald-600 to-emerald-700 p-8 text-white shadow-xl shadow-emerald-200 dark:shadow-none relative overflow-hidden">
+            <div className="absolute top-0 right-0 p-8 opacity-10">
+              <DollarSign className="h-32 w-32" />
+            </div>
+            <div className="relative z-10">
+              <div className="flex justify-between items-start">
+                <div>
+                  <h4 className="text-sm font-medium opacity-80 mb-1 uppercase tracking-wider">Saldo Atual em Caixa</h4>
+                  <p className="text-5xl font-black tracking-tight">R$ {currentBalance.toFixed(2)}</p>
+                </div>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => setShowDetails(true)}
+                  className="bg-white/10 border-white/20 hover:bg-white/20 text-white text-xs backdrop-blur-md px-4 py-2 rounded-full transition-all hover:scale-105"
+                >
+                  <Search className="h-3 w-3 mr-2" /> Mais Detalhes
+                </Button>
+              </div>
+              <div className="mt-8 flex justify-end">
+                <Button 
+                  variant="danger" 
+                  onClick={() => setIsClosingModalOpen(true)} 
+                  className="bg-rose-500 hover:bg-rose-600 border-none text-white px-8 py-3 rounded-xl font-bold shadow-lg shadow-rose-900/20 transition-all hover:scale-105 flex items-center gap-2"
+                >
+                  <LogOut className="h-4 w-4" /> Fechar Caixa
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-6 md:grid-cols-2">
+            <div className="rounded-xl border border-zinc-200 p-6 bg-white dark:bg-zinc-900 dark:border-zinc-800">
+              <div className="flex items-center gap-2 mb-4">
+                 <Button 
+                   size="sm" 
+                   variant={transactionType === 'expense' ? 'danger' : 'ghost'} 
+                   onClick={() => setTransactionType('expense')}
+                   className="h-8 text-xs flex-1"
+                 >
+                   Sangria
+                 </Button>
+                 <Button 
+                   size="sm" 
+                   variant={transactionType === 'income' ? 'default' : 'ghost'} 
+                   onClick={() => setTransactionType('income')}
+                   className="h-8 text-xs flex-1"
+                   style={transactionType === 'income' ? {backgroundColor: '#10b981'} : {}}
+                 >
+                   Reforço
+                 </Button>
+              </div>
+
+              {transactionType === 'expense' ? (
+                <>
+                  <h4 className="font-medium mb-4 dark:text-zinc-200 flex items-center gap-2">
+                    <ArrowDown className="h-4 w-4 text-rose-500" /> Sangria (Saída de Caixa)
+                  </h4>
+                  <form onSubmit={handleSangria} className="space-y-4">
+                    <div className="grid gap-4">
+                      <Input 
+                        type="number" 
+                        step="0.01" 
+                        value={sangriaAmount} 
+                        onChange={(e) => setSangriaAmount(e.target.value)} 
+                        placeholder="Valor R$"
+                        required
+                      />
+                      <Input 
+                        value={sangriaDesc} 
+                        onChange={(e) => setSangriaDesc(e.target.value)} 
+                        placeholder="Descrição (ex: Compra de Gelo)"
+                        required
+                      />
+                    </div>
+                    <Button type="submit" variant="outline" className="w-full">Confirmar Sangria</Button>
+                  </form>
+                </>
+              ) : (
+                <>
+                  <h4 className="font-medium mb-4 dark:text-zinc-200 flex items-center gap-2">
+                    <ArrowUp className="h-4 w-4 text-emerald-500" /> Reforço (Entrada de Caixa)
+                  </h4>
+                  <form onSubmit={handleReforco} className="space-y-4">
+                    <div className="grid gap-4">
+                      <Input 
+                        type="number" 
+                        step="0.01" 
+                        value={reforcoAmount} 
+                        onChange={(e) => setReforcoAmount(e.target.value)} 
+                        placeholder="Valor R$"
+                        required
+                      />
+                      <Input 
+                        value={reforcoDesc} 
+                        onChange={(e) => setReforcoDesc(e.target.value)} 
+                        placeholder="Descrição (ex: Troco inicial extra)"
+                        required
+                      />
+                    </div>
+                    <Button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-700">Confirmar Reforço</Button>
+                  </form>
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-zinc-200 bg-white dark:bg-zinc-900 dark:border-zinc-800 overflow-hidden">
+            <div className="p-4 border-b border-zinc-100 dark:border-zinc-800 flex items-center justify-between">
+              <h4 className="font-medium dark:text-zinc-200">Últimas Transações</h4>
+              <History className="h-4 w-4 text-zinc-400" />
+            </div>
+            <div className="divide-y divide-zinc-100 dark:divide-zinc-800 max-h-60 overflow-y-auto">
+              {cashierTransactions.length === 0 ? (
+                <div className="p-8 text-center text-zinc-500 text-sm">Nenhuma transação registrada</div>
+              ) : (
+                cashierTransactions.map((t: any) => (
+                  <div key={t.id} className="p-4 flex items-center justify-between hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors">
+                    <div className="flex items-center gap-3">
+                      <div className={cn(
+                        "p-2 rounded-lg",
+                        (t.type === 'sale' || t.type === 'income') ? "bg-emerald-100 text-emerald-600" : "bg-rose-100 text-rose-600"
+                      )}>
+                        {(t.type === 'sale' || t.type === 'income') ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />}
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{t.description}</p>
+                        <p className="text-[10px] text-zinc-500">{new Date(t.timestamp).toLocaleTimeString()} - {t.username}</p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <p className={cn(
+                        "text-sm font-bold",
+                        (t.type === 'sale' || t.type === 'income') ? "text-emerald-600" : "text-rose-600"
+                      )}>
+                        {(t.type === 'sale' || t.type === 'income') ? '+' : '-'} R$ {t.amount.toFixed(2)}
+                      </p>
+                      <p className="text-[10px] text-zinc-400 uppercase">{normalizeMethod(t.method)}</p>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Detalhes do Saldo */}
+      <AnimatePresence>
+        {showDetails && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="w-full max-w-md bg-white dark:bg-zinc-900 rounded-3xl shadow-2xl overflow-hidden"
+            >
+              <div className="p-6 border-b border-zinc-100 dark:border-zinc-800 flex items-center justify-between bg-emerald-600 text-white">
+                <h3 className="text-xl font-bold">Detalhamento de Entradas</h3>
+                <button onClick={() => setShowDetails(false)} className="p-2 hover:bg-white/20 rounded-full transition-colors">
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <div className="p-6 space-y-6">
+                <div className="space-y-3">
+                  <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Entradas por Método</h4>
+                  <div className="space-y-2">
+                    {['dinheiro', 'pix', 'débito', 'crédito'].map(method => (
+                      <div key={method} className="flex justify-between items-center p-4 rounded-2xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-100 dark:border-zinc-800">
+                        <span className="text-sm font-medium capitalize dark:text-zinc-300">{method}</span>
+                        <span className="font-bold text-emerald-600">R$ {(summary.byMethod[method] || 0).toFixed(2)}</span>
+                      </div>
+                    ))}
+                    <div className="flex justify-between items-center p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-900/20 border-2 border-emerald-100 dark:border-emerald-800">
+                      <span className="text-sm font-bold text-emerald-700 dark:text-emerald-300">Total de Entradas</span>
+                      <span className="font-black text-emerald-700 dark:text-emerald-300 text-lg">R$ {summary.income.toFixed(2)}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <Button onClick={() => setShowDetails(false)} className="w-full py-4 rounded-2xl font-bold">Fechar Detalhes</Button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Modal de Conferência e Fechamento */}
+      <AnimatePresence>
+        {isClosingModalOpen && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="w-full max-w-2xl bg-white dark:bg-zinc-900 rounded-3xl shadow-2xl overflow-hidden"
+            >
+              <div className="p-6 border-b border-zinc-100 dark:border-zinc-800 flex items-center justify-between bg-zinc-900 text-white dark:bg-zinc-800">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-rose-500 rounded-lg">
+                    <LogOut className="h-5 w-5 text-white" />
+                  </div>
+                  <h3 className="text-xl font-bold">Conferência de Fechamento</h3>
+                </div>
+                <button onClick={() => setIsClosingModalOpen(false)} className="p-2 hover:bg-white/20 rounded-full transition-colors">
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              
+              <div className="p-8 space-y-8 overflow-y-auto max-h-[80vh]">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                  <div className="space-y-6">
+                    <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Resumo Financeiro</h4>
+                    <div className="space-y-4">
+                      <div className="flex justify-between items-center p-4 rounded-2xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-100 dark:border-zinc-800">
+                        <span className="text-sm text-zinc-500">Saldo Inicial</span>
+                        <span className="font-bold dark:text-zinc-200">R$ {cashierStatus.initialBalance?.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between items-center p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-900/10 border border-emerald-100 dark:border-emerald-800/30">
+                        <span className="text-sm text-emerald-600 font-medium">Total de Entradas</span>
+                        <span className="font-bold text-emerald-600">+ R$ {summary.income.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between items-center p-4 rounded-2xl bg-rose-50 dark:bg-rose-900/10 border border-rose-100 dark:border-rose-800/30">
+                        <span className="text-sm text-rose-600 font-medium">Total de Saídas</span>
+                        <span className="font-bold text-rose-600">- R$ {summary.expense.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between items-center p-6 rounded-2xl bg-zinc-900 text-white shadow-xl">
+                        <span className="font-bold opacity-80">SALDO FINAL</span>
+                        <span className="text-2xl font-black">R$ {currentBalance.toFixed(2)}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-6">
+                    <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Entradas por Método</h4>
+                    <div className="space-y-3">
+                      {['dinheiro', 'pix', 'débito', 'crédito'].map(method => (
+                        <div key={method} className="flex justify-between items-center p-3 rounded-xl border border-zinc-100 dark:border-zinc-800">
+                          <span className="text-sm capitalize dark:text-zinc-400">{method}</span>
+                          <span className="font-bold dark:text-zinc-200">R$ {(summary.byMethod[method] || 0).toFixed(2)}</span>
+                        </div>
+                      ))}
+                    </div>
+                    
+                    <div className="pt-4 space-y-3">
+                      <Button 
+                        variant="outline" 
+                        className="w-full gap-2 border-zinc-200 dark:border-zinc-700"
+                        onClick={() => {
+                          const billing = {
+                            total: summary.income,
+                            byMethod: summary.byMethod,
+                            expenses: summary.expense
+                          };
+                          generateCashierPDF({ 
+                            opened_at: new Date().toISOString(), 
+                            opened_by_name: currentUser.username, 
+                            initial_balance: cashierStatus.initialBalance || 0 
+                          }, cashierTransactions, billing);
+                        }}
+                      >
+                        <Download className="h-4 w-4" /> Baixar Relatório PDF
+                      </Button>
+                      <Button 
+                        variant="outline" 
+                        className="w-full gap-2 border-zinc-200 dark:border-zinc-700"
+                        onClick={() => printFinancialSlip('Conferência de Caixa', {
+                          'Abertura': cashierStatus.openedAt ? new Date(cashierStatus.openedAt).toLocaleString() : '-',
+                          'Saldo Inicial': cashierStatus.initialBalance,
+                          'Total Entradas': summary.income,
+                          'Total Saídas': summary.expense,
+                          'Saldo Final Estimado': (cashierStatus.initialBalance || 0) + summary.income - summary.expense,
+                          'Entradas por Método': summary.byMethod
+                        }, currentUser.username)}
+                      >
+                        <Printer className="h-4 w-4" /> Imprimir Conferência
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pt-6 border-t border-zinc-100 dark:border-zinc-800">
+                  <div className="bg-rose-50 dark:bg-rose-900/20 p-4 rounded-2xl border border-rose-100 dark:border-rose-800 mb-6 flex items-start gap-3">
+                    <AlertCircle className="h-5 w-5 text-rose-600 mt-0.5" />
+                    <p className="text-sm text-rose-700 dark:text-rose-400">
+                      Ao confirmar, o caixa será encerrado e todos os contadores serão zerados para a próxima abertura. Certifique-se de que os valores físicos conferem com o sistema.
+                    </p>
+                  </div>
+                  <div className="flex gap-4">
+                    <Button 
+                      variant="outline" 
+                      className="flex-1 py-4 rounded-2xl font-bold"
+                      onClick={() => setIsClosingModalOpen(false)}
+                    >
+                      Cancelar
+                    </Button>
+                    <Button 
+                      variant="danger" 
+                      className="flex-[2] py-4 rounded-2xl font-black text-lg shadow-lg shadow-rose-900/20"
+                      onClick={handleCloseCashier}
+                    >
+                      CONFIRMAR FECHAMENTO
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 }

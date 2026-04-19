@@ -83,4 +83,11 @@ export type WSEvent =
   | { type: 'SETTINGS_UPDATE'; payload: any }
   | { type: 'ORDERS_SYNC'; payload: OrderItem[] }
   | { type: 'NOTIFICATION'; payload: { message: string; type: 'info' | 'success' | 'warning' } }
-  | { type: 'FORCE_LOGOUT'; payload: { message: string } };
+  | { type: 'FORCE_LOGOUT'; payload: { message: string } }
+  | { type: 'ONLINE_USERS'; payload: { userId: string; username: string; role: string }[] }
+  | { type: 'CASHIER_STATUS'; payload: { status: 'open' | 'closed'; sessionId?: string; initialBalance?: number } }
+  | { type: 'CASHIER_TRANSACTIONS'; payload: any[] }
+  | { type: 'ACCOUNTS_PAYABLE_SYNC'; payload: any[] }
+  | { type: 'TASKS_SYNC'; payload: any[] }
+  | { type: 'HISTORY_ALL_DATA'; payload: HistoryEvent[] }
+  | { type: 'PRINT_COMMAND'; payload: any };
