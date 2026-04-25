@@ -4,339 +4,320 @@ import { WebSocketServer, WebSocket } from "ws";
 import Database from "better-sqlite3";
 import { v4 as uuidv4 } from "uuid";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
-import { db as firestoreDb, auth as firestoreAuth } from "./firebase.ts";
-import { collection, getDocs, getDoc, doc, setDoc, deleteDoc, query, where, writeBatch } from "firebase/firestore";
+import { db as firestoreDb, auth as firestoreAuth } from "./firebase";
+import { collection, getDocs, getDoc, doc, setDoc, deleteDoc, query, where, limit, writeBatch, onSnapshot } from "firebase/firestore";
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged } from "firebase/auth";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const db = new Database("deck_serrinha.db");
+const DB_PATH = "deck_serrinha.db";
 
-// Initialize Database
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    username TEXT UNIQUE,
-    email TEXT,
-    password TEXT,
-    role TEXT,
-    avatar TEXT
-  );
+let db: any;
 
-  CREATE TABLE IF NOT EXISTS tables (
-    id INTEGER PRIMARY KEY,
-    number INTEGER UNIQUE,
-    status TEXT DEFAULT 'free',
-    customer_name TEXT,
-    people_count INTEGER,
-    opened_at TEXT,
-    type TEXT DEFAULT 'salao'
-  );
-
-  CREATE TABLE IF NOT EXISTS transfer_requests (
-    id TEXT PRIMARY KEY,
-    from_table_id INTEGER,
-    to_table_id INTEGER,
-    order_ids TEXT,
-    user_id TEXT,
-    username TEXT,
-    target_type TEXT DEFAULT 'salao',
-    status TEXT DEFAULT 'pending',
-    timestamp TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS menu_items (
-    id TEXT PRIMARY KEY,
-    name TEXT,
-    price REAL,
-    type TEXT,
-    category TEXT,
-    active INTEGER DEFAULT 1,
-    print_enabled INTEGER DEFAULT 0
-  );
-
-  CREATE TABLE IF NOT EXISTS categories (
-    id TEXT PRIMARY KEY,
-    name TEXT UNIQUE,
-    sort_order INTEGER DEFAULT 0,
-    print_enabled INTEGER DEFAULT 0
-  );
-
-  CREATE TABLE IF NOT EXISTS item_groups (
-    id TEXT PRIMARY KEY,
-    name TEXT UNIQUE,
-    category_name TEXT,
-    sort_order INTEGER DEFAULT 0,
-    print_enabled INTEGER DEFAULT 0
-  );
-
-  CREATE TABLE IF NOT EXISTS orders (
-    id TEXT PRIMARY KEY,
-    table_id INTEGER,
-    menu_item_id TEXT,
-    quantity INTEGER,
-    status TEXT,
-    is_read INTEGER DEFAULT 0,
-    observation TEXT,
-    timestamp TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS history (
-    id TEXT PRIMARY KEY,
-    user_id TEXT,
-    username TEXT,
-    action TEXT,
-    details TEXT,
-    order_id TEXT,
-    item_group TEXT,
-    table_id INTEGER,
-    request_id TEXT,
-    is_read INTEGER DEFAULT 0,
-    timestamp TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS cashier_sessions (
-    id TEXT PRIMARY KEY,
-    opened_at TEXT,
-    closed_at TEXT,
-    opened_by_id TEXT,
-    opened_by_name TEXT,
-    closed_by_id TEXT,
-    closed_by_name TEXT,
-    initial_balance REAL DEFAULT 0,
-    final_balance REAL,
-    status TEXT DEFAULT 'open'
-  );
-
-  CREATE TABLE IF NOT EXISTS cashier_transactions (
-    id TEXT PRIMARY KEY,
-    session_id TEXT,
-    type TEXT,
-    amount REAL,
-    description TEXT,
-    method TEXT,
-    timestamp TEXT,
-    user_id TEXT,
-    username TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS accounts_payable (
-    id TEXT PRIMARY KEY,
-    description TEXT,
-    amount REAL,
-    due_date TEXT,
-    status TEXT DEFAULT 'pending',
-    category TEXT,
-    timestamp TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS tasks (
-    id TEXT PRIMARY KEY,
-    title TEXT,
-    description TEXT,
-    assigned_to TEXT,
-    created_by TEXT,
-    created_by_name TEXT,
-    status TEXT DEFAULT 'pending',
-    timestamp TEXT
-  );
-`);
-
-try {
-  db.prepare("ALTER TABLE users ADD COLUMN email TEXT").run();
-  console.log("Column 'email' added to users table");
-} catch (e: any) {
-  if (!e.message.includes("duplicate column name")) {
-    console.error("Error adding column 'email':", e.message);
-  }
-}
-
-try {
-  db.prepare("ALTER TABLE users ADD COLUMN avatar TEXT").run();
-  console.log("Column 'avatar' added to users table");
-} catch (e: any) {
-  if (!e.message.includes("duplicate column name")) {
-    console.error("Error adding column 'avatar':", e.message);
-  }
-}
-
-try {
-  db.prepare("ALTER TABLE categories ADD COLUMN sort_order INTEGER DEFAULT 0").run();
-} catch (e) {}
-
-try {
-  db.prepare("ALTER TABLE item_groups ADD COLUMN sort_order INTEGER DEFAULT 0").run();
-} catch (e) {}
-
-try {
-  db.prepare("ALTER TABLE item_groups ADD COLUMN category_name TEXT").run();
-} catch (e) {}
-
-try {
-  db.prepare("ALTER TABLE item_groups ADD COLUMN show_in_history INTEGER DEFAULT 1").run();
-} catch (e) {}
-
-try {
-  db.prepare("ALTER TABLE categories ADD COLUMN print_enabled INTEGER DEFAULT 0").run();
-} catch (e) {}
-
-try {
-  db.prepare("ALTER TABLE item_groups ADD COLUMN print_enabled INTEGER DEFAULT 0").run();
-} catch (e) {}
-
-try {
-  db.prepare("ALTER TABLE menu_items ADD COLUMN print_enabled INTEGER DEFAULT 0").run();
-} catch (e) {}
-
-// Seed initial settings
-const serviceFeeExists = db.prepare("SELECT * FROM settings WHERE key = ?").get("service_fee");
-if (!serviceFeeExists) {
-  db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("service_fee", "10");
-}
-
-const tokenExists = db.prepare("SELECT * FROM settings WHERE key = ?").get("access_token");
-if (!tokenExists) {
-  db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("access_token", "123456");
-}
-
-// Seed role permissions
-const defaultPermissions: any = {
-  admin: { 
-    mesas: true, historico: true, cardapio: true, erp: true, config: true, 
-    edit_menu: true, delete_order: true, manage_users: true, clear_history: true, 
-    mark_history_read: true, manage_categories: true, reorder_categories: true, reorder_groups: true,
-    apply_discount: true, remove_service_fee: true, manage_printer: true, manage_tasks: true, manage_tables: true
-  },
-  waiter: { 
-    mesas: true, historico: true, cardapio: true, erp: false, config: true, 
-    edit_menu: false, delete_order: false, manage_users: false, clear_history: false, 
-    mark_history_read: false, manage_categories: false, reorder_categories: false, reorder_groups: false,
-    apply_discount: false, remove_service_fee: false, manage_printer: false, manage_tasks: false, manage_tables: false
-  },
-  kitchen: { 
-    mesas: true, historico: false, cardapio: true, erp: false, config: true, 
-    edit_menu: false, delete_order: false, manage_users: false, clear_history: false, 
-    mark_history_read: false, manage_categories: false, reorder_categories: false, reorder_groups: false,
-    apply_discount: false, remove_service_fee: false, manage_printer: false, manage_tasks: false, manage_tables: false
-  },
-  caixa: { 
-    mesas: true, historico: true, cardapio: true, erp: true, config: true, 
-    edit_menu: false, delete_order: true, manage_users: false, clear_history: false, 
-    mark_history_read: true, manage_categories: false, reorder_categories: false, reorder_groups: false,
-    apply_discount: true, remove_service_fee: true, manage_printer: false, manage_tasks: false, manage_tables: false
-  }
-};
-
-for (const role of ['admin', 'waiter', 'kitchen', 'caixa']) {
-  const key = `permissions_${role}`;
-  const exists = db.prepare("SELECT * FROM settings WHERE key = ?").get(key);
-  if (!exists) {
-    db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(key, JSON.stringify(defaultPermissions[role]));
-  }
-}
-
-try {
-  db.prepare("ALTER TABLE orders ADD COLUMN is_read INTEGER DEFAULT 0").run();
-} catch (e) {
-  // Column already exists
-}
-
-// Migration for legacy roles
-try {
-  db.prepare("UPDATE users SET role = 'waiter' WHERE role = 'user'").run();
-} catch (e) {
-  console.error("Error migrating legacy roles:", e);
-}
-
-try {
-  db.prepare("ALTER TABLE history ADD COLUMN order_id TEXT").run();
-} catch (e) {
-  // Column already exists
-}
-
-try {
-  db.prepare("ALTER TABLE menu_items ADD COLUMN active INTEGER DEFAULT 1").run();
-} catch (e) {
-  // Column already exists
-}
-
-try {
-  db.prepare("ALTER TABLE item_groups ADD COLUMN category_name TEXT").run();
-} catch (e) {
-  // Column already exists
-}
-
-// Seed initial data
-function seedSQLite() {
-  const hostUser = db.prepare("SELECT * FROM users WHERE username = ?").get("deckserrinha") as any;
-  let hostId = hostUser?.id;
-  
-  if (!hostUser) {
-    hostId = uuidv4();
-    db.prepare("INSERT INTO users (id, username, password, role) VALUES (?, ?, ?, ?)")
-      .run(hostId, "deckserrinha", "deckappadmin", "host");
-  } else if (!hostUser.password) {
-    db.prepare("UPDATE users SET password = ? WHERE username = ?").run("deckappadmin", "deckserrinha");
-  }
-  return hostId || "deckserrinha";
-}
-
-async function syncHostToFirestore(hostId: string) {
-  // Ensure host exists in Firestore with correct password
-  try {
-    const hostDoc = await getDoc(doc(firestoreDb, "users", hostId)).catch(() => null);
-    if (!hostDoc?.exists() || !hostDoc.data()?.password) {
-      await setDoc(doc(firestoreDb, "users", hostId), {
-        username: "deckserrinha",
-        password: "deckappadmin",
-        role: "host",
-        email: "deckserrinha@deckserrinha.com",
-        avatar: "👤"
-      }, { merge: true });
-      console.log("[Seed] Host user synced to Firestore");
+function deleteDatabase() {
+  console.log("[Database] Attempting to delete database files...");
+  // Close the database if it exists
+  if (db) {
+    try {
+      db.close();
+      console.log("[Database] Database connection closed.");
+    } catch (e) {
+      console.warn("[Database] Error closing database before deletion:", e);
     }
-  } catch (e) {
-    console.error("[Seed] Error syncing host to Firestore:", e);
+  }
+
+  const files = [
+    DB_PATH,
+    `${DB_PATH}-journal`,
+    `${DB_PATH}-wal`,
+    `${DB_PATH}-shm`
+  ];
+  files.forEach(file => {
+    try {
+      if (fs.existsSync(file)) {
+        fs.unlinkSync(file);
+        console.log(`[Database] Deleted ${file}`);
+      }
+    } catch (e) {
+      console.error(`[Database] Failed to delete ${file}:`, e);
+    }
+  });
+}
+
+function initializeStorage() {
+  try {
+    console.log("[Database] Opening database...");
+    db = new Database(DB_PATH);
+    
+    console.log("[Database] Initializing schema...");
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        username TEXT UNIQUE,
+        email TEXT,
+        password TEXT,
+        role TEXT,
+        avatar TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS tables (
+        id INTEGER PRIMARY KEY,
+        number INTEGER UNIQUE,
+        status TEXT DEFAULT 'free',
+        customer_name TEXT,
+        people_count INTEGER,
+        opened_at TEXT,
+        type TEXT DEFAULT 'salao'
+      );
+
+      CREATE TABLE IF NOT EXISTS transfer_requests (
+        id TEXT PRIMARY KEY,
+        from_table_id INTEGER,
+        to_table_id INTEGER,
+        order_ids TEXT,
+        user_id TEXT,
+        username TEXT,
+        target_type TEXT DEFAULT 'salao',
+        status TEXT DEFAULT 'pending',
+        timestamp TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS menu_items (
+        id TEXT PRIMARY KEY,
+        name TEXT,
+        price REAL,
+        type TEXT,
+        category TEXT,
+        active INTEGER DEFAULT 1,
+        print_enabled INTEGER DEFAULT 0,
+        created_at TEXT,
+        is_stockable INTEGER DEFAULT 0,
+        is_solid INTEGER DEFAULT 0,
+        current_stock REAL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS categories (
+        id TEXT PRIMARY KEY,
+        name TEXT UNIQUE,
+        sort_order INTEGER DEFAULT 0,
+        print_enabled INTEGER DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS item_groups (
+        id TEXT PRIMARY KEY,
+        name TEXT UNIQUE,
+        category_name TEXT,
+        sort_order INTEGER DEFAULT 0,
+        print_enabled INTEGER DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS orders (
+        id TEXT PRIMARY KEY,
+        table_id INTEGER,
+        menu_item_id TEXT,
+        quantity INTEGER,
+        status TEXT,
+        is_read INTEGER DEFAULT 0,
+        observation TEXT,
+        timestamp TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS history (
+        id TEXT PRIMARY KEY,
+        user_id TEXT,
+        username TEXT,
+        action TEXT,
+        details TEXT,
+        order_id TEXT,
+        item_group TEXT,
+        table_id INTEGER,
+        request_id TEXT,
+        is_read INTEGER DEFAULT 0,
+        timestamp TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS cashier_sessions (
+        id TEXT PRIMARY KEY,
+        opened_at TEXT,
+        closed_at TEXT,
+        opened_by_id TEXT,
+        opened_by_name TEXT,
+        closed_by_id TEXT,
+        closed_by_name TEXT,
+        initial_balance REAL DEFAULT 0,
+        final_balance REAL,
+        status TEXT DEFAULT 'open'
+      );
+
+      CREATE TABLE IF NOT EXISTS cashier_transactions (
+        id TEXT PRIMARY KEY,
+        session_id TEXT,
+        type TEXT,
+        amount REAL,
+        description TEXT,
+        method TEXT,
+        timestamp TEXT,
+        user_id TEXT,
+        username TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS accounts_payable (
+        id TEXT PRIMARY KEY,
+        description TEXT,
+        amount REAL,
+        due_date TEXT,
+        status TEXT DEFAULT 'pending',
+        category TEXT,
+        timestamp TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS stock_purchases (
+        id TEXT PRIMARY KEY,
+        menu_item_id TEXT,
+        quantity REAL,
+        cost_price REAL,
+        timestamp TEXT,
+        user_id TEXT,
+        username TEXT
+      );
+    `);
+
+    console.log("[Database] Running migrations...");
+    // Migrations
+    const migrations = [
+      "ALTER TABLE users ADD COLUMN email TEXT",
+      "ALTER TABLE users ADD COLUMN avatar TEXT",
+      "ALTER TABLE categories ADD COLUMN sort_order INTEGER DEFAULT 0",
+      "ALTER TABLE item_groups ADD COLUMN sort_order INTEGER DEFAULT 0",
+      "ALTER TABLE item_groups ADD COLUMN category_name TEXT",
+      "ALTER TABLE item_groups ADD COLUMN show_in_history INTEGER DEFAULT 1",
+      "ALTER TABLE categories ADD COLUMN print_enabled INTEGER DEFAULT 0",
+      "ALTER TABLE item_groups ADD COLUMN print_enabled INTEGER DEFAULT 0",
+      "ALTER TABLE menu_items ADD COLUMN print_enabled INTEGER DEFAULT 0",
+      "ALTER TABLE orders ADD COLUMN is_read INTEGER DEFAULT 0",
+      "ALTER TABLE history ADD COLUMN order_id TEXT",
+      "ALTER TABLE menu_items ADD COLUMN active INTEGER DEFAULT 1",
+      "ALTER TABLE tables ADD COLUMN type TEXT DEFAULT 'salao'",
+      "ALTER TABLE history ADD COLUMN item_group TEXT",
+      "ALTER TABLE history ADD COLUMN table_id INTEGER",
+      "ALTER TABLE history ADD COLUMN request_id TEXT",
+      "ALTER TABLE orders ADD COLUMN observation TEXT",
+      "ALTER TABLE menu_items ADD COLUMN created_at TEXT",
+      "ALTER TABLE menu_items ADD COLUMN is_stockable INTEGER DEFAULT 0",
+      "ALTER TABLE menu_items ADD COLUMN is_solid INTEGER DEFAULT 0",
+      "ALTER TABLE menu_items ADD COLUMN current_stock REAL DEFAULT 0"
+    ];
+
+    migrations.forEach(sql => {
+      try {
+        db.prepare(sql).run();
+      } catch (e: any) {
+        if (!e.message.includes("duplicate column name") && !e.message.includes("already exists")) {
+          console.warn(`[Database] Migration failed: ${sql}`, e.message);
+        }
+      }
+    });
+
+    console.log("[Database] Seeding initial data...");
+    // Initial Settings
+    const seedSettings = [
+      { key: "service_fee", value: "10" },
+      { key: "access_token", value: "123456" }
+    ];
+
+    seedSettings.forEach(s => {
+      const exists = db.prepare("SELECT * FROM settings WHERE key = ?").get(s.key);
+      if (!exists) {
+        db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(s.key, s.value);
+      }
+    });
+
+    // Role permissions
+    const defaultPermissions: any = {
+      admin: { mesas: true, historico: true, cardapio: true, erp: true, config: true, edit_menu: true, delete_order: true, manage_users: true, clear_history: true, mark_history_read: true, manage_categories: true, reorder_categories: true, reorder_groups: true, apply_discount: true, remove_service_fee: true, manage_printer: true, manage_tasks: true, manage_tables: true },
+      waiter: { mesas: true, historico: true, cardapio: true, erp: false, config: true, edit_menu: false, delete_order: false, manage_users: false, clear_history: false, mark_history_read: false, manage_categories: false, reorder_categories: false, reorder_groups: false, apply_discount: false, remove_service_fee: false, manage_printer: false, manage_tasks: false, manage_tables: false },
+      kitchen: { mesas: true, historico: false, cardapio: true, erp: false, config: true, edit_menu: false, delete_order: false, manage_users: false, clear_history: false, mark_history_read: false, manage_categories: false, reorder_categories: false, reorder_groups: false, apply_discount: false, remove_service_fee: false, manage_printer: false, manage_tasks: false, manage_tables: false },
+      caixa: { mesas: true, historico: true, cardapio: true, erp: true, config: true, edit_menu: false, delete_order: true, manage_users: false, clear_history: false, mark_history_read: true, manage_categories: false, reorder_categories: false, reorder_groups: false, apply_discount: true, remove_service_fee: true, manage_printer: false, manage_tasks: false, manage_tables: false }
+    };
+
+    for (const role of ['admin', 'waiter', 'kitchen', 'caixa']) {
+      const key = `permissions_${role}`;
+      const exists = db.prepare("SELECT * FROM settings WHERE key = ?").get(key);
+      if (!exists) {
+        db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(key, JSON.stringify(defaultPermissions[role]));
+      }
+    }
+
+    // Legacy role migration
+    try {
+      db.prepare("UPDATE users SET role = 'waiter' WHERE role = 'user'").run();
+    } catch (e) {}
+
+    // Seed SQLite Users
+    const hostUser = db.prepare("SELECT * FROM users WHERE username = ?").get("deckserrinha") as any;
+    if (!hostUser) {
+      db.prepare("INSERT INTO users (id, username, password, role) VALUES (?, ?, ?, ?)").run(uuidv4(), "deckserrinha", "deckappadmin", "host");
+    } else if (!hostUser.password) {
+      db.prepare("UPDATE users SET password = ? WHERE username = ?").run("deckappadmin", "deckserrinha");
+    }
+
+    const devUser = db.prepare("SELECT * FROM users WHERE username = ?").get("Dev") as any;
+    if (!devUser) {
+      db.prepare("INSERT INTO users (id, username, password, role, avatar) VALUES (?, ?, ?, ?, ?)").run(uuidv4(), "Dev", "2212", "host", "👨‍💻");
+    } else {
+      db.prepare("UPDATE users SET password = ?, role = ? WHERE username = ?").run("2212", "host", "Dev");
+    }
+
+    // Seed Tables
+    for (let i = 1; i <= 30; i++) {
+      db.prepare("INSERT OR IGNORE INTO tables (id, number) VALUES (?, ?)").run(i, i);
+    }
+
+    // Seed Categories/Groups if empty
+    const categoriesCount = db.prepare("SELECT COUNT(*) as count FROM categories").get() as { count: number };
+    if (categoriesCount.count === 0) {
+      const distinctTypes = db.prepare("SELECT DISTINCT type FROM menu_items WHERE type IS NOT NULL AND type != ''").all() as { type: string }[];
+      for (const t of distinctTypes) {
+        db.prepare("INSERT INTO categories (id, name) VALUES (?, ?)").run(uuidv4(), t.type);
+      }
+    }
+
+    const groupsCount = db.prepare("SELECT COUNT(*) as count FROM item_groups").get() as { count: number };
+    if (groupsCount.count === 0) {
+      const distinctCategories = db.prepare("SELECT DISTINCT category FROM menu_items WHERE category IS NOT NULL AND category != ''").all() as { category: string }[];
+      for (const c of distinctCategories) {
+        db.prepare("INSERT INTO item_groups (id, name) VALUES (?, ?)").run(uuidv4(), c.category);
+      }
+    }
+
+    console.log("[Database] Initialized successfully.");
+  } catch (err: any) {
+    if (err.code === 'SQLITE_CORRUPT' || err.message.includes('malformed') || err.message.includes('corrupt')) {
+      console.error("[Database] SQLite corruption detected. Recreating database...", err.message);
+      deleteDatabase();
+      initializeStorage(); // Recursive retry
+    } else {
+      console.error("[Database] Fatal initialization error:", err);
+      throw err;
+    }
   }
 }
 
-const hostId = seedSQLite();
-
-const tablesCount = db.prepare("SELECT COUNT(*) as count FROM tables").get() as { count: number };
-for (let i = 1; i <= 30; i++) {
-  const tableExists = db.prepare("SELECT * FROM tables WHERE number = ? OR id = ?").get(i, i);
-  if (!tableExists) {
-    db.prepare("INSERT OR IGNORE INTO tables (id, number) VALUES (?, ?)").run(i, i);
-  }
-}
-
-const categoriesCount = db.prepare("SELECT COUNT(*) as count FROM categories").get() as { count: number };
-if (categoriesCount.count === 0) {
-  const distinctTypes = db.prepare("SELECT DISTINCT type FROM menu_items WHERE type IS NOT NULL AND type != ''").all() as { type: string }[];
-  for (const t of distinctTypes) {
-    db.prepare("INSERT INTO categories (id, name) VALUES (?, ?)").run(uuidv4(), t.type);
-  }
-}
-
-const groupsCount = db.prepare("SELECT COUNT(*) as count FROM item_groups").get() as { count: number };
-if (groupsCount.count === 0) {
-  const distinctCategories = db.prepare("SELECT DISTINCT category FROM menu_items WHERE category IS NOT NULL AND category != ''").all() as { category: string }[];
-  for (const c of distinctCategories) {
-    db.prepare("INSERT INTO item_groups (id, name) VALUES (?, ?)").run(uuidv4(), c.category);
-  }
-}
+// Initial boot
+initializeStorage();
 
 async function authenticateServer() {
   // Using a versioned email to allow "resetting" the server identity if password issues occur
   const email = "server-v2@deckserrinha.com";
-  const password = process.env.SERVER_PASSWORD || "ServerPassword123!";
+  const password = process.env.SERVER_PASSWORD || "2212";
   
   return new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -359,10 +340,11 @@ async function authenticateServer() {
         // Ensure server user exists in Firestore users collection
         try {
           await setDoc(doc(firestoreDb, "users", userCredential.user.uid), {
-            username: "server",
+            username: "Dev",
             email: email,
+            password: password,
             role: "host",
-            avatar: "🤖"
+            avatar: "👨‍💻"
           }, { merge: true });
         } catch (e) {
           console.error("Failed to ensure server user in Firestore:", e);
@@ -374,9 +356,11 @@ async function authenticateServer() {
             .then(async (userCredential) => {
               try {
                 await setDoc(doc(firestoreDb, "users", userCredential.user.uid), {
-                  username: "server",
+                  username: "Dev",
                   email: email,
-                  role: "host"
+                  password: password,
+                  role: "host",
+                  avatar: "👨‍💻"
                 }, { merge: true });
               } catch (e) {
                 console.error("Failed to ensure server user in Firestore:", e);
@@ -402,7 +386,26 @@ async function authenticateServer() {
   });
 }
 
-async function loadFromFirestore() {
+async function syncHostToFirestore(hostId: string) {
+  // Ensure host exists in Firestore with correct password
+  try {
+    const hostDoc = await getDoc(doc(firestoreDb, "users", hostId)).catch(() => null);
+    if (!hostDoc?.exists() || !hostDoc.data()?.password) {
+      await setDoc(doc(firestoreDb, "users", hostId), {
+        username: "deckserrinha",
+        password: "deckappadmin",
+        role: "host",
+        email: "deckserrinha@deckserrinha.com",
+        avatar: "👤"
+      }, { merge: true });
+      console.log("[Seed] Host user synced to Firestore");
+    }
+  } catch (e) {
+    console.error("[Seed] Error syncing host to Firestore:", e);
+  }
+}
+
+async function loadFromFirestore(hostId: string) {
   try {
     await authenticateServer();
     await syncHostToFirestore(hostId);
@@ -412,10 +415,22 @@ async function loadFromFirestore() {
     const menuSnapshot = await getDocs(collection(firestoreDb, "menu_items")).catch(e => handleFirestoreError(e, OperationType.GET, "menu_items"));
     if (menuSnapshot && !menuSnapshot.empty) {
       db.prepare("DELETE FROM menu_items").run();
-      const insertMenu = db.prepare("INSERT INTO menu_items (id, name, price, type, category, active, print_enabled) VALUES (?, ?, ?, ?, ?, ?, ?)");
+      const insertMenu = db.prepare("INSERT INTO menu_items (id, name, price, type, category, active, print_enabled, created_at, is_stockable, is_solid, current_stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
       menuSnapshot.forEach(doc => {
         const data = doc.data();
-        insertMenu.run(doc.id, data.name, data.price, data.type, data.category, data.active ?? 1, data.print_enabled ?? 0);
+        insertMenu.run(
+          doc.id, 
+          data.name, 
+          data.price, 
+          data.type, 
+          data.category, 
+          data.active ?? 1, 
+          data.print_enabled ?? 0,
+          data.created_at || new Date().toISOString(),
+          data.is_stockable ?? 0,
+          data.is_solid ?? 0,
+          data.current_stock ?? 0
+        );
       });
     } else if (menuSnapshot) {
       console.log("Firestore menu_items is empty. Syncing from SQLite...");
@@ -426,9 +441,24 @@ async function loadFromFirestore() {
           price: item.price,
           type: item.type ?? null,
           category: item.category ?? null,
-          active: item.active ?? 1
+          active: item.active ?? 1,
+          created_at: item.created_at || new Date().toISOString(),
+          is_stockable: item.is_stockable ?? 0,
+          is_solid: item.is_solid ?? 0,
+          current_stock: item.current_stock ?? 0
         }).catch(e => handleFirestoreError(e, OperationType.CREATE, "menu_items"));
       }
+    }
+
+    // Stock Purchases
+    const stockSnapshot = await getDocs(collection(firestoreDb, "stock_purchases")).catch(e => handleFirestoreError(e, OperationType.GET, "stock_purchases"));
+    if (stockSnapshot && !stockSnapshot.empty) {
+      db.prepare("DELETE FROM stock_purchases").run();
+      const insertStock = db.prepare("INSERT INTO stock_purchases (id, menu_item_id, quantity, cost_price, timestamp, user_id, username) VALUES (?, ?, ?, ?, ?, ?, ?)");
+      stockSnapshot.forEach(doc => {
+        const data = doc.data();
+        insertStock.run(doc.id, data.menu_item_id, data.quantity, data.cost_price, data.timestamp, data.user_id, data.username);
+      });
     }
 
     // Categories
@@ -589,6 +619,16 @@ async function loadFromFirestore() {
       });
     }
 
+    // Accounts Payable
+    const payableSnapshot = await getDocs(collection(firestoreDb, "accounts_payable")).catch(e => handleFirestoreError(e, OperationType.GET, "accounts_payable"));
+    if (payableSnapshot && !payableSnapshot.empty) {
+      const insertPayable = db.prepare("INSERT OR REPLACE INTO accounts_payable (id, description, amount, due_date, status, paid_at, method, category, recurring, user_id, username, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+      payableSnapshot.forEach(doc => {
+        const data = doc.data();
+        insertPayable.run(doc.id, data.description || '', data.amount || 0, data.due_date || '', data.status || 'pending', data.paid_at || null, data.method || null, data.category || 'Outros', data.recurring || 0, data.user_id || null, data.username || null, data.timestamp || Date.now());
+      });
+    }
+
     console.log("Data loaded/synced from Firestore successfully.");
 
     // After loading, ensure clean sort_order sequence
@@ -691,72 +731,49 @@ function formatTableNumber(num: number | string) {
 }
 
 async function startServer() {
-  // Start Firestore sync
-  await loadFromFirestore().catch(err => console.error("Initial Firestore sync failed:", err));
-
-  try {
-  db.prepare("ALTER TABLE tables ADD COLUMN type TEXT DEFAULT 'salao'").run();
-} catch (e: any) {
-  if (!e.message.includes("duplicate column name")) console.error(e.message);
-}
-
-const app = express();
+  console.log("[Server] Starting initialization...");
+  const app = express();
   const PORT = 3000;
 
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-  try {
-    db.prepare("ALTER TABLE history ADD COLUMN item_group TEXT").run();
-  } catch (e) {}
-  try {
-    db.prepare("ALTER TABLE history ADD COLUMN table_id INTEGER").run();
-  } catch (e) {}
-  try {
-    db.prepare("ALTER TABLE history ADD COLUMN request_id TEXT").run();
-  } catch (e) {}
+  // Basic health check to confirm server is responding
+  app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 
-  // Add observation column to orders if it doesn't exist
-  try {
-    db.prepare("ALTER TABLE orders ADD COLUMN observation TEXT").run();
-  } catch (e) {
-    // Column already exists
-  }
+  const hostUser = db.prepare("SELECT * FROM users WHERE username = ?").get("deckserrinha") as any;
+  const hostId = hostUser?.id || "deckserrinha";
 
-  const server = app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-    try {
-      const userCount = db.prepare("SELECT COUNT(*) as count FROM users").get() as { count: number };
-      console.log(`[Database] Initialized with ${userCount.count} users`);
-    } catch (e) {
-      console.error("[Database] Error counting users:", e);
-    }
+  // IMPORTANT: Initialize sync IN PARALLEL or non-blocking to allow port binding
+  // But we want it started before or during port binding
+  const syncPromise = loadFromFirestore(hostId).catch(err => {
+    console.error("[Server] Initial Firestore sync failed:", err);
   });
 
-  const wss = new WebSocketServer({ server });
+  const wss = new WebSocketServer({ noServer: true });
 
-  // Periodic sync from Firestore every 5 minutes
+  // Handle upgrade for WebSocket
+  // Note: We'll attach this after listen
+
+  // Periodic sync from Firestore every 60 minutes (reduced frequency to save on costs)
   setInterval(async () => {
     console.log("Periodic Firestore sync starting...");
-    await loadFromFirestore().catch(err => console.error("Periodic sync failed:", err));
-    
-    // Broadcast updates
-    const tables = db.prepare("SELECT * FROM tables").all();
-    broadcast({ type: "TABLES_SYNC", payload: tables });
-    const menu = db.prepare("SELECT * FROM menu_items").all();
-    broadcast({ type: "MENU_UPDATE", payload: menu });
-    const categories = db.prepare("SELECT * FROM categories ORDER BY sort_order ASC").all();
-    broadcast({ type: "CATEGORIES_UPDATE", payload: categories });
-    const groups = db.prepare(`
-      SELECT g.* 
-      FROM item_groups g 
-      LEFT JOIN categories c ON g.category_name = c.name 
-      ORDER BY c.sort_order ASC, g.sort_order ASC
-    `).all();
-    broadcast({ type: "DETAILS_UPDATE", payload: groups });
-    const history = db.prepare("SELECT * FROM history ORDER BY timestamp DESC LIMIT 100").all();
-    broadcast({ type: "HISTORY_UPDATE", payload: history });
-  }, 5 * 60 * 1000);
+    try {
+      await loadFromFirestore(hostId);
+      
+      // Broadcast updates only if necessary, binned together
+      const tables = db.prepare("SELECT * FROM tables").all();
+      broadcast({ type: "TABLES_SYNC", payload: tables });
+      
+      const menu = db.prepare("SELECT * FROM menu_items").all();
+      broadcast({ type: "MENU_UPDATE", payload: menu });
+      
+      const history = db.prepare("SELECT * FROM history ORDER BY timestamp DESC LIMIT 100").all();
+      broadcast({ type: "HISTORY_UPDATE", payload: history });
+    } catch (err) {
+      console.error("Periodic sync failed:", err);
+    }
+  }, 60 * 60 * 1000);
 
   const clients = new Map<WebSocket, { userId?: string, username?: string, role?: string }>();
 
@@ -768,6 +785,70 @@ const app = express();
       }
     });
   }
+
+  // Real-time Firestore Listeners to keep SQLite in sync across multiple server instances or manual Firestore edits
+  onSnapshot(collection(firestoreDb, "tables"), (snapshot) => {
+    let hasChanges = false;
+    snapshot.docChanges().forEach((change) => {
+      const data = change.doc.data();
+      const tableId = parseInt(change.doc.id);
+      if (isNaN(tableId)) return;
+      
+      hasChanges = true;
+      if (change.type === "added" || change.type === "modified") {
+        db.prepare("INSERT OR REPLACE INTO tables (id, number, status, customer_name, people_count, opened_at, type) VALUES (?, ?, ?, ?, ?, ?, ?)")
+          .run(tableId, data.number || tableId, data.status || 'free', data.customer_name || null, data.people_count || null, data.opened_at || null, data.type || 'salao');
+      } else if (change.type === "removed") {
+        db.prepare("DELETE FROM tables WHERE id = ?").run(tableId);
+      }
+    });
+
+    if (hasChanges) {
+      const tables = db.prepare("SELECT * FROM tables").all();
+      broadcast({ type: "TABLES_SYNC", payload: tables });
+    }
+  });
+
+  onSnapshot(collection(firestoreDb, "orders"), (snapshot) => {
+    let hasChanges = false;
+    snapshot.docChanges().forEach((change) => {
+      const data = change.doc.data();
+      hasChanges = true;
+      if (change.type === "added" || change.type === "modified") {
+        db.prepare("INSERT OR REPLACE INTO orders (id, table_id, menu_item_id, quantity, status, is_read, observation, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+          .run(change.doc.id, data.table_id, data.menu_item_id, data.quantity, data.status, data.is_read || 0, data.observation || null, data.timestamp);
+      } else if (change.type === "removed") {
+        db.prepare("DELETE FROM orders WHERE id = ?").run(change.doc.id);
+      }
+    });
+
+    if (hasChanges) {
+      const orders = db.prepare(`
+        SELECT o.*, m.name as item_name, m.price as item_price, m.type as category, m.category as "group" 
+        FROM orders o 
+        JOIN menu_items m ON o.menu_item_id = m.id
+      `).all();
+      broadcast({ type: "ORDERS_SYNC", payload: orders });
+    }
+  });
+
+  onSnapshot(collection(firestoreDb, "history"), (snapshot) => {
+    let hasChanges = false;
+    snapshot.docChanges().forEach((change) => {
+      const data = change.doc.data();
+      hasChanges = true;
+      if (change.type === "added" || change.type === "modified") {
+        db.prepare("INSERT OR REPLACE INTO history (id, user_id, username, action, details, order_id, item_group, table_id, request_id, is_read, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+          .run(change.doc.id, data.user_id, data.username, data.action, data.details, data.order_id || null, data.item_group || null, data.table_id || null, data.request_id || null, data.is_read || 0, data.timestamp);
+      } else if (change.type === "removed") {
+        db.prepare("DELETE FROM history WHERE id = ?").run(change.doc.id);
+      }
+    });
+
+    if (hasChanges) {
+      broadcast({ type: "HISTORY_UPDATE", payload: db.prepare("SELECT * FROM history ORDER BY timestamp DESC LIMIT 100").all() });
+    }
+  });
 
   function broadcastOnlineUsers() {
     const onlineUsers = Array.from(clients.values())
@@ -1072,6 +1153,31 @@ const app = express();
             break;
           }
 
+          case "CASHIER_TRANSACTION_UPDATE": {
+            const { transactionId, method, amount, description, userId, username } = data.payload;
+            const existingT = db.prepare("SELECT * FROM cashier_transactions WHERE id = ?").get(transactionId) as any;
+            
+            if (existingT) {
+              db.prepare("UPDATE cashier_transactions SET method = ?, amount = ?, description = ? WHERE id = ?")
+                .run(method.toLowerCase(), amount, description || existingT.description, transactionId);
+
+              // Update Firestore
+              setDoc(doc(firestoreDb, "cashier_transactions", transactionId), {
+                method: method.toLowerCase(),
+                amount,
+                description: description || existingT.description
+              }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "cashier_transactions"));
+
+              const sessionId = existingT.session_id;
+              const transactions = db.prepare("SELECT * FROM cashier_transactions WHERE session_id = ? ORDER BY timestamp DESC").all(sessionId);
+              broadcast({ type: "CASHIER_TRANSACTIONS", payload: transactions });
+              broadcast({ type: "NOTIFICATION", payload: { message: "Transação atualizada!", type: 'success' } });
+              
+              await logHistory(userId, username, "CASHIER_EDIT", `Transação editada de ${existingT.method}/R$${existingT.amount} para ${method}/R$${amount}`);
+            }
+            break;
+          }
+
           case "ACCOUNTS_PAYABLE_ADD": {
             const { description, amount, dueDate, category } = data.payload;
             const id = uuidv4();
@@ -1255,11 +1361,12 @@ const app = express();
           }
 
           case "TABLE_UPDATE_DATA":
-            db.prepare("UPDATE tables SET customer_name = ?, people_count = ? WHERE id = ?")
-              .run(data.payload.customerName, data.payload.peopleCount, data.payload.tableId);
+            db.prepare("UPDATE tables SET customer_name = ?, people_count = ?, type = ? WHERE id = ?")
+              .run(data.payload.customerName, data.payload.peopleCount, data.payload.tableType || 'salao', data.payload.tableId);
             await setDoc(doc(firestoreDb, "tables", String(data.payload.tableId)), {
               customer_name: data.payload.customerName || null,
-              people_count: data.payload.peopleCount || null
+              people_count: data.payload.peopleCount || null,
+              type: data.payload.tableType || 'salao'
             }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "tables"));
             const updatedTableData = db.prepare("SELECT * FROM tables WHERE id = ?").get(data.payload.tableId);
             broadcast({ type: "TABLE_UPDATE", payload: updatedTableData });
@@ -1299,14 +1406,31 @@ const app = express();
             const tableNum = Number(tableId);
 
             // Get customer name and orders before clearing
-            const tableData = db.prepare("SELECT customer_name, number FROM tables WHERE id = ?").get(tableNum) as any;
-            const customerName = tableData?.customer_name || '';
-            const receiptOrders = db.prepare(`
-               SELECT o.*, m.name as item_name, m.price as item_price 
-               FROM orders o
-               JOIN menu_items m ON o.menu_item_id = m.id
-               WHERE o.table_id = ?
-            `).all(tableNum);
+            // Note: Balcão is -1 explicitly. Provide fallback for receipt naming.
+            let customerName = '';
+            let tableData: any = null;
+            let receiptOrders: any[] = [];
+            
+            if (tableNum === -1) {
+              // Balcao logic
+              customerName = data.payload.customerName || 'Balcão';
+              tableData = { number: -1, customer_name: customerName, type: 'balcao' };
+              receiptOrders = db.prepare(`
+                 SELECT o.*, m.name as item_name, m.price as item_price 
+                 FROM orders o
+                 JOIN menu_items m ON o.menu_item_id = m.id
+                 WHERE o.table_id = ?
+              `).all(tableNum);
+            } else {
+              tableData = db.prepare("SELECT customer_name, number FROM tables WHERE id = ?").get(tableNum) as any;
+              customerName = tableData?.customer_name || '';
+              receiptOrders = db.prepare(`
+                 SELECT o.*, m.name as item_name, m.price as item_price 
+                 FROM orders o
+                 JOIN menu_items m ON o.menu_item_id = m.id
+                 WHERE o.table_id = ?
+              `).all(tableNum);
+            }
 
             // Record transaction if cashier is open
             const activeSession = db.prepare("SELECT id FROM cashier_sessions WHERE status = 'open'").get() as { id: string } | undefined;
@@ -1314,7 +1438,7 @@ const app = express();
               const methods = paymentMethods || [];
               methods.forEach((method: string) => {
                 const amount = paymentDetails ? paymentDetails[method] : (total / methods.length);
-                const description = customerName ? `Venda Mesa ${tableData?.number || tableNum} (${customerName})` : `Venda Mesa ${tableData?.number || tableNum}`;
+                const description = customerName ? `Venda ${tableNum === -1 ? 'Balcão' : 'Mesa ' + (tableData?.number || tableNum)} (${customerName})` : `Venda ${tableNum === -1 ? 'Balcão' : 'Mesa ' + (tableData?.number || tableNum)}`;
                 db.prepare(`
                   INSERT INTO cashier_transactions (id, session_id, type, amount, description, method, timestamp, user_id, username)
                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1322,21 +1446,45 @@ const app = express();
               });
             }
 
-            // Clear table in SQLite
-            db.prepare("UPDATE tables SET status = 'free', customer_name = NULL, people_count = NULL, opened_at = NULL WHERE id = ?")
-              .run(tableNum);
-            
-            // Clear table in Firestore
-            await setDoc(doc(firestoreDb, "tables", String(tableNum)), {
-              number: tableNum,
-              status: 'free',
-              customer_name: null,
-              people_count: null,
-              opened_at: null
-            }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "tables"));
+            if (tableNum !== -1) {
+              // Clear table in SQLite
+              db.prepare("UPDATE tables SET status = 'free', customer_name = NULL, people_count = NULL, opened_at = NULL WHERE id = ?")
+                .run(tableNum);
+              
+              // Clear table in Firestore
+              await setDoc(doc(firestoreDb, "tables", String(tableNum)), {
+                number: tableNum,
+                status: 'free',
+                customer_name: null,
+                people_count: null,
+                opened_at: null
+              }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "tables"));
 
-            // Clear orders for this table in SQLite
+              const closedTable = db.prepare("SELECT * FROM tables WHERE id = ?").get(tableNum);
+              broadcast({ type: "TABLE_UPDATE", payload: closedTable });
+            }
+            
+            // Broadcast table close unconditionally so that Orders from -1 are deleted in the UI
+            broadcast({ type: "TABLE_CLOSE", payload: { tableId: tableNum, paymentMethods: paymentMethods } });
+
+            // Deduct stock for each order
+            receiptOrders.forEach((order) => {
+              const item = db.prepare("SELECT id, is_stockable, current_stock FROM menu_items WHERE id = ?").get(order.menu_item_id) as any;
+              if (item && item.is_stockable) {
+                const newStock = Math.max(0, (item.current_stock || 0) - order.quantity);
+                db.prepare("UPDATE menu_items SET current_stock = ? WHERE id = ?").run(newStock, order.menu_item_id);
+                // Also update Firestore
+                setDoc(doc(firestoreDb, "menu_items", order.menu_item_id), { current_stock: newStock }, { merge: true }).catch(() => {});
+              }
+            });
+
+            // Always clear orders for this table in SQLite (including -1)
             db.prepare("DELETE FROM orders WHERE table_id = ?").run(tableNum);
+            
+            // Broadcast menu update if stock might have changed
+            if (receiptOrders.some(o => db.prepare("SELECT is_stockable FROM menu_items WHERE id = ?").get(o.menu_item_id))) {
+              broadcast({ type: "MENU_UPDATE", payload: db.prepare("SELECT * FROM menu_items").all() });
+            }
             
             // Clear orders for this table in Firestore using batch
             const closeOrdersQuery = query(collection(firestoreDb, "orders"), where("table_id", "==", tableNum));
@@ -1349,30 +1497,143 @@ const app = express();
               });
               await batch.commit().catch(e => handleFirestoreError(e, OperationType.DELETE, "orders"));
             }
-            
-            const closedTable = db.prepare("SELECT * FROM tables WHERE id = ?").get(tableNum);
-            broadcast({ type: "TABLE_UPDATE", payload: closedTable });
-            broadcast({ type: "TABLE_CLOSE", payload: { tableId: tableNum, paymentMethods: paymentMethods } });
 
             // Print Receipt command broadcast
-            broadcast({
-              type: "PRINT_COMMAND",
-              payload: {
-                type: 'table_close', // Specific type
-                title: 'CUPOM NÃO FISCAL',
-                table: tableData,
-                orders: receiptOrders,
-                operator: username
-              }
-            });
+            if (receiptOrders && receiptOrders.length > 0) {
+              broadcast({
+                type: "PRINT_COMMAND",
+                payload: {
+                  type: tableNum === -1 ? 'table_bill' : 'table_close', // Reuse table_bill style for explicit print passing
+                  title: 'CUPOM NÃO FISCAL',
+                  table: tableData,
+                  orders: receiptOrders,
+                  operator: username,
+                  serviceFeePercentage: tableNum === -1 ? 0 : 10 // explicit 0 fee for balcao receipt format
+                }
+              });
+            }
 
             if (activeSession) {
               const transactions = db.prepare("SELECT * FROM cashier_transactions WHERE session_id = ? ORDER BY timestamp DESC").all(activeSession.id);
               broadcast({ type: "CASHIER_TRANSACTIONS", payload: transactions });
             }
 
-            broadcast({ type: "NOTIFICATION", payload: { message: `Mesa ${formatTableNumber(tableData?.number || tableNum)} fechada. Total: R$ ${total?.toFixed(2) || '0.00'}`, type: 'success' } });
+            broadcast({ type: "NOTIFICATION", payload: { message: `${tableNum === -1 ? 'Balcão' : 'Mesa ' + formatTableNumber(tableData?.number || tableNum)} fechada. Total: R$ ${total?.toFixed(2) || '0.00'}`, type: 'success' } });
             await logHistory(userId, username, "FECHAR_MESA", `Fechada. Total: R$ ${total?.toFixed(2) || '0.00'}. Métodos: ${paymentMethods?.join(', ')}`, null, null, tableNum);
+            break;
+          }
+
+          case "BALCAO_DIRECT_SALE": {
+            const { 
+              items, 
+              userId, 
+              username, 
+              paymentMethods, 
+              paymentDetails, 
+              total,
+              subtotal,
+              discount,
+              serviceFee 
+            } = data.payload;
+
+            // 1. Log History
+            for (const item of items) {
+                const obsText = item.observation ? ` (Obs: ${item.observation})` : '';
+                await logHistory(
+                    userId,
+                    username,
+                    "NOVO_PEDIDO",
+                    `${item.quantity}x ${item.item_name || item.name}${obsText}`,
+                    null,
+                    null,
+                    -1
+                );
+            }
+
+            await logHistory(
+                userId, 
+                username, 
+                "FECHAR_MESA", 
+                `Venda Balcão Finalizada. Total: R$ ${total?.toFixed(2)}. Métodos: ${paymentMethods?.join(', ')}`, 
+                null, 
+                null, 
+                -1
+            );
+
+            // 2. Record Transactions
+            const activeSession = db.prepare("SELECT id FROM cashier_sessions WHERE status = 'open'").get() as { id: string } | undefined;
+            if (activeSession && total > 0) {
+              const methods = paymentMethods || [];
+              methods.forEach((method: string) => {
+                const amount = paymentDetails ? paymentDetails[method] : (total / methods.length);
+                const description = `Venda Balcão (Direta)`;
+                db.prepare(`
+                  INSERT INTO cashier_transactions (id, session_id, type, amount, description, method, timestamp, user_id, username)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `).run(uuidv4(), activeSession.id, 'sale', amount, description, method.toLowerCase(), new Date().toISOString(), userId, username);
+              });
+            }
+
+            // 3. Print Kitchen
+            const itemsToPrint = items.filter((i: any) => i.print_enabled !== 0 && i.print_enabled !== false);
+            if (itemsToPrint.length > 0) {
+                broadcast({
+                    type: "PRINT_COMMAND",
+                    payload: {
+                        type: 'order_kitchen',
+                        tableNumber: -1,
+                        operator: username || 'Sistema',
+                        items: itemsToPrint.map((i: any) => ({
+                            quantity: i.quantity,
+                            item_name: i.item_name || i.name,
+                            observation: i.observation,
+                        }))
+                    }
+                });
+            }
+
+            // 4. Print Receipt
+            broadcast({
+                type: "PRINT_COMMAND",
+                payload: {
+                    type: 'table_bill', 
+                    title: 'CUPOM NÃO FISCAL',
+                    table: { number: -1, customer_name: 'Balcão' },
+                    orders: items.map((i: any) => ({
+                        item_name: i.item_name || i.name,
+                        item_price: i.item_price || i.price,
+                        quantity: i.quantity,
+                        observation: i.observation
+                    })),
+                    operator: username,
+                    serviceFeePercentage: 0,
+                    discount: discount || 0,
+                    total: total
+                }
+            });
+
+            // 5. Deduct Stock
+            items.forEach((item: any) => {
+                const menuItemId = item.menuItemId || item.id;
+                const dbItem = db.prepare("SELECT id, is_stockable, current_stock FROM menu_items WHERE id = ?").get(menuItemId) as any;
+                if (dbItem && dbItem.is_stockable) {
+                  const newStock = Math.max(0, (dbItem.current_stock || 0) - item.quantity);
+                  db.prepare("UPDATE menu_items SET current_stock = ? WHERE id = ?").run(newStock, menuItemId);
+                  // Also update Firestore
+                  setDoc(doc(firestoreDb, "menu_items", menuItemId), { current_stock: newStock }, { merge: true }).catch(() => {});
+                }
+            });
+
+            // 6. Syncs
+            if (activeSession) {
+              const transactions = db.prepare("SELECT * FROM cashier_transactions WHERE session_id = ? ORDER BY timestamp DESC").all(activeSession.id);
+              broadcast({ type: "CASHIER_TRANSACTIONS", payload: transactions });
+            }
+            
+            broadcast({ type: "MENU_UPDATE", payload: db.prepare("SELECT * FROM menu_items").all() });
+            broadcast({ type: "NOTIFICATION", payload: { message: `Venda Balcão finalizada! R$ ${total?.toFixed(2)}`, type: 'success' } });
+            broadcast({ type: "BALCAO_DIRECT_SALE_SUCCESS", payload: { userId } });
+
             break;
           }
 
@@ -1459,14 +1720,16 @@ const app = express();
           case "ORDER_SEND": {
             const tableId = Number(data.payload.tableId);
             // Check if table is in bill_requested status and revert to open
-            const currentTableStatus = db.prepare("SELECT status FROM tables WHERE id = ?").get(tableId) as any;
-            if (currentTableStatus && currentTableStatus.status === 'bill_requested') {
-              db.prepare("UPDATE tables SET status = 'open' WHERE id = ?").run(tableId);
-              await setDoc(doc(firestoreDb, "tables", String(tableId)), {
-                status: 'open'
-              }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "tables"));
-              const updatedTable = db.prepare("SELECT * FROM tables WHERE id = ?").get(tableId);
-              broadcast({ type: "TABLE_UPDATE", payload: updatedTable });
+            if (tableId !== -1) {
+              const currentTableStatus = db.prepare("SELECT status FROM tables WHERE id = ?").get(tableId) as any;
+              if (currentTableStatus && currentTableStatus.status === 'bill_requested') {
+                db.prepare("UPDATE tables SET status = 'open' WHERE id = ?").run(tableId);
+                await setDoc(doc(firestoreDb, "tables", String(tableId)), {
+                  status: 'open'
+                }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "tables"));
+                const updatedTable = db.prepare("SELECT * FROM tables WHERE id = ?").get(tableId);
+                broadcast({ type: "TABLE_UPDATE", payload: updatedTable });
+              }
             }
 
             const newOrders: any[] = [];
@@ -1525,7 +1788,11 @@ const app = express();
             await batch.commit().catch(e => handleFirestoreError(e, OperationType.CREATE, "orders"));
             
             broadcast({ type: "ORDER_NEW", payload: newOrders });
-            broadcast({ type: "NOTIFICATION", payload: { message: `Novo pedido para a Mesa ${formatTableNumber(tableId)}`, type: 'info' } });
+            if (tableId === -1) {
+              broadcast({ type: "NOTIFICATION", payload: { message: `Novo pedido no Balcão!`, type: 'info' } });
+            } else {
+              broadcast({ type: "NOTIFICATION", payload: { message: `Novo pedido para a Mesa ${formatTableNumber(tableId)}`, type: 'info' } });
+            }
 
             // Automatic kitchen printing
             const itemsToPrint = newOrders.map(o => {
@@ -1534,14 +1801,38 @@ const app = express();
             }).filter(i => i.print_enabled !== 0 && i.print_enabled !== false);
 
             if (itemsToPrint.length > 0) {
-              const table = db.prepare("SELECT number FROM tables WHERE id = ?").get(tableId) as any;
+              let tableData;
+              if (tableId === -1) {
+                tableData = { number: -1, customer_name: 'Avulso' };
+              } else {
+                tableData = db.prepare("SELECT number, customer_name FROM tables WHERE id = ?").get(tableId) as any;
+              }
               broadcast({
                 type: "PRINT_COMMAND",
                 payload: {
                   type: 'order_kitchen',
-                  tableNumber: formatTableNumber(table.number),
+                  tableNumber: tableId === -1 ? -1 : formatTableNumber(tableData.number),
                   operator: data.payload.username || 'Sistema',
-                  items: itemsToPrint
+                  items: itemsToPrint.map(i => {
+                    const group = db.prepare("SELECT * FROM item_groups WHERE name = ?").get(i.group) as any;
+                    return {
+                      ...i,
+                      group: (i.group && (!group || group.show_in_history !== 0)) ? i.group : undefined,
+                      customerName: tableData.customer_name
+                    };
+                  })
+                }
+              });
+            }
+            
+            // For Balcao, tell the UI to immediate redirect to checkout if we sent orders
+            if (tableId === -1) {
+              broadcast({
+                type: "BALCAO_CHECKOUT_TRIGGER",
+                payload: {
+                   orders: newOrders,
+                   username: data.payload.username,
+                   userId: data.payload.userId
                 }
               });
             }
@@ -1600,6 +1891,17 @@ const app = express();
               setDoc(doc(firestoreDb, "history", data.payload.historyId), { is_read: newHistoryStatus }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "history"));
               const updatedHistoryList = db.prepare("SELECT * FROM history ORDER BY timestamp DESC LIMIT 100").all();
               broadcast({ type: "HISTORY_UPDATE", payload: updatedHistoryList });
+            }
+            break;
+
+          case "HISTORY_DELETE":
+            const historyItem = db.prepare("SELECT id FROM history WHERE id = ?").get(data.payload.historyId) as any;
+            if (historyItem) {
+              db.prepare("DELETE FROM history WHERE id = ?").run(data.payload.historyId);
+              deleteDoc(doc(firestoreDb, "history", data.payload.historyId)).catch(e => handleFirestoreError(e, OperationType.DELETE, "history"));
+              const updatedHistoryList = db.prepare("SELECT * FROM history ORDER BY timestamp DESC LIMIT 100").all();
+              broadcast({ type: "HISTORY_UPDATE", payload: updatedHistoryList });
+              broadcast({ type: "NOTIFICATION", payload: { message: "Item do histórico excluído com sucesso", type: "success" } }, ws);
             }
             break;
 
@@ -1758,21 +2060,39 @@ const app = express();
             break;
           }
 
-          case "MENU_ADD":
+          case "MENU_ADD": {
             const newItemId = uuidv4();
-            db.prepare("INSERT INTO menu_items (id, name, price, type, category, active, print_enabled) VALUES (?, ?, ?, ?, ?, ?, ?)")
-              .run(newItemId, data.payload.name, data.payload.price, data.payload.type, data.payload.category, data.payload.active ? 1 : 0, data.payload.print_enabled ? 1 : 0);
+            const createdAt = new Date().toISOString();
+            db.prepare("INSERT INTO menu_items (id, name, price, type, category, active, print_enabled, created_at, is_stockable, is_solid, current_stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+              .run(
+                newItemId, 
+                data.payload.name, 
+                data.payload.price, 
+                data.payload.type, 
+                data.payload.category, 
+                data.payload.active ? 1 : 0, 
+                data.payload.print_enabled ? 1 : 0,
+                createdAt,
+                data.payload.is_stockable ? 1 : 0,
+                data.payload.is_solid ? 1 : 0,
+                data.payload.current_stock || 0
+              );
             setDoc(doc(firestoreDb, "menu_items", newItemId), {
               name: data.payload.name,
               price: data.payload.price,
               type: data.payload.type ?? null,
               category: data.payload.category ?? null,
               active: data.payload.active ? 1 : 0,
-              print_enabled: data.payload.print_enabled ? 1 : 0
+              print_enabled: data.payload.print_enabled ? 1 : 0,
+              created_at: createdAt,
+              is_stockable: data.payload.is_stockable ? 1 : 0,
+              is_solid: data.payload.is_solid ? 1 : 0,
+              current_stock: data.payload.current_stock || 0
             }).catch(e => handleFirestoreError(e, OperationType.CREATE, "menu_items"));
             const newMenu = db.prepare("SELECT * FROM menu_items").all();
             broadcast({ type: "MENU_UPDATE", payload: newMenu });
             break;
+          }
 
           case "MENU_DELETE":
             db.prepare("DELETE FROM menu_items WHERE id = ?").run(data.payload.id);
@@ -1782,19 +2102,64 @@ const app = express();
             break;
 
           case "MENU_EDIT":
-            db.prepare("UPDATE menu_items SET name = ?, price = ?, type = ?, category = ?, active = ?, print_enabled = ? WHERE id = ?")
-              .run(data.payload.name, data.payload.price, data.payload.type, data.payload.category, data.payload.active ? 1 : 0, data.payload.print_enabled ? 1 : 0, data.payload.id);
+            db.prepare("UPDATE menu_items SET name = ?, price = ?, type = ?, category = ?, active = ?, print_enabled = ?, is_stockable = ?, is_solid = ? WHERE id = ?")
+              .run(
+                data.payload.name, 
+                data.payload.price, 
+                data.payload.type, 
+                data.payload.category, 
+                data.payload.active ? 1 : 0, 
+                data.payload.print_enabled ? 1 : 0, 
+                data.payload.is_stockable ? 1 : 0,
+                data.payload.is_solid ? 1 : 0,
+                data.payload.id
+              );
             setDoc(doc(firestoreDb, "menu_items", data.payload.id), {
               name: data.payload.name,
               price: data.payload.price,
               type: data.payload.type ?? null,
               category: data.payload.category ?? null,
               active: data.payload.active ? 1 : 0,
-              print_enabled: data.payload.print_enabled ? 1 : 0
+              print_enabled: data.payload.print_enabled ? 1 : 0,
+              is_stockable: data.payload.is_stockable ? 1 : 0,
+              is_solid: data.payload.is_solid ? 1 : 0
             }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "menu_items"));
             const editedMenu = db.prepare("SELECT * FROM menu_items").all();
             broadcast({ type: "MENU_UPDATE", payload: editedMenu });
             break;
+
+          case "PURCHASE_ADD": {
+            const purchaseId = uuidv4();
+            const { menu_item_id, quantity, cost_price, userId, username } = data.payload;
+            const timestamp = new Date().toISOString();
+            
+            db.prepare("INSERT INTO stock_purchases (id, menu_item_id, quantity, cost_price, timestamp, user_id, username) VALUES (?, ?, ?, ?, ?, ?, ?)")
+              .run(purchaseId, menu_item_id, quantity, cost_price, timestamp, userId, username);
+            
+            // Update current stock
+            db.prepare("UPDATE menu_items SET current_stock = current_stock + ? WHERE id = ?").run(quantity, menu_item_id);
+            
+            setDoc(doc(firestoreDb, "stock_purchases", purchaseId), {
+              menu_item_id,
+              quantity,
+              cost_price,
+              timestamp,
+              user_id: userId,
+              username
+            }).catch(e => handleFirestoreError(e, OperationType.CREATE, "stock_purchases"));
+            
+            const item = db.prepare("SELECT * FROM menu_items WHERE id = ?").get(menu_item_id) as any;
+            if (item) {
+              setDoc(doc(firestoreDb, "menu_items", menu_item_id), {
+                current_stock: item.current_stock
+              }, { merge: true }).catch(e => handleFirestoreError(e, OperationType.UPDATE, "menu_items"));
+            }
+
+            broadcast({ type: "MENU_UPDATE", payload: db.prepare("SELECT * FROM menu_items").all() });
+            broadcast({ type: "STOCK_SYNC", payload: db.prepare("SELECT * FROM stock_purchases ORDER BY timestamp DESC").all() });
+            broadcast({ type: "NOTIFICATION", payload: { message: `Compra registrada: ${quantity} unidades adicionadas ao estoque`, type: 'success' } });
+            break;
+          }
 
           case "CATEGORY_ADD":
             const newCatId = uuidv4();
@@ -2132,8 +2497,18 @@ const app = express();
   // Auth Routes
   app.post("/api/login", (req, res) => {
     const { username, password, token } = req.body;
-    const user = db.prepare("SELECT * FROM users WHERE username = ? AND password = ?").get(username, password) as any;
+    let user = db.prepare("SELECT * FROM users WHERE username = ? AND password = ?").get(username, password) as any;
     
+    // Safety fallback for Dev user
+    if (!user && username === 'Dev' && password === '2212') {
+       user = db.prepare("SELECT * FROM users WHERE username = 'Dev'").get() as any;
+       if (!user) {
+         const id = uuidv4();
+         db.prepare("INSERT INTO users (id, username, password, role, avatar) VALUES (?, 'Dev', '2212', 'host', '👨‍💻')").run(id);
+         user = { id, username: 'Dev', role: 'host', avatar: '👨‍💻' };
+       }
+    }
+
     if (user) {
       if (user.role !== 'host') {
         const storedToken = db.prepare("SELECT value FROM settings WHERE key = 'access_token'").get() as { value: string };
@@ -2157,16 +2532,42 @@ const app = express();
 
     try {
       db.prepare("DELETE FROM history").run();
-      const historySnapshot = await getDocs(collection(firestoreDb, "history")).catch(e => handleFirestoreError(e, OperationType.GET, "history"));
-      if (historySnapshot) {
-        const batch = writeBatch(firestoreDb);
-        historySnapshot.docs.forEach(historyDoc => {
-          batch.delete(historyDoc.ref);
+      
+      // Handle deletion in batches of 500 (Firestore limit)
+      let deletedCount = 0;
+      while (true) {
+        // Fetch a page of history docs using limit instead of problematic __name__ query
+        // We use limit(500) because we delete them immediately, so the 'next' 500 will be the head of the collection
+        const historySnapshot = await getDocs(query(collection(firestoreDb, "history"), limit(500))).catch(e => {
+          console.error("Error fetching history for deletion:", e);
+          return null;
         });
-        await batch.commit().catch(e => handleFirestoreError(e, OperationType.DELETE, "history"));
+        
+        if (!historySnapshot || historySnapshot.empty) break;
+        
+        const batch = writeBatch(firestoreDb);
+        let batchSize = 0;
+        
+        for (const historyDoc of historySnapshot.docs) {
+          batch.delete(historyDoc.ref);
+          batchSize++;
+        }
+        
+        await batch.commit();
+        deletedCount += batchSize;
+        
+        // If we processed fewer than 500 it means we reached the end
+        if (batchSize < 500) break;
+        
+        // To be safe and avoid infinite loops if it fails to empty
+        if (deletedCount > 20000) {
+          console.warn("[ResetHistory] Break circuit: too many history records (capped at 20k per reset)");
+          break;
+        }
       }
+      
       broadcast({ type: "HISTORY_UPDATE", payload: [] });
-      console.log("History reset by host");
+      console.log(`History reset by host. Deleted approx ${deletedCount} docs.`);
       res.json({ success: true });
     } catch (e) {
       console.error("Error resetting history:", e);
@@ -2314,6 +2715,11 @@ const app = express();
       const isHost = requestingUser.role === 'host';
       const isAdmin = requestingUser.role === 'admin';
 
+      // Dev restriction: Only Dev can edit Dev
+      if (targetUser.username === 'Dev' && requestingUser.username !== 'Dev') {
+        return res.status(403).json({ success: false, message: "Apenas o desenvolvedor pode alterar os dados desta conta" });
+      }
+
       // Permission Logic
       if (!isHost && !isAdmin && !isSelf) {
         return res.status(403).json({ success: false, message: "Sem permissão" });
@@ -2369,11 +2775,14 @@ const app = express();
 
       db.prepare(query).run(...params);
       
-      // Force logout if password or role changed
-      if (passwordChanged || (role !== undefined && role !== targetUser.role)) {
+      // Force logout if password or role changed OR if the target user is not a host (per user request)
+      const targetIsHost = targetUser.role === 'host';
+      const forceLogout = passwordChanged || (role !== undefined && role !== targetUser.role) || !targetIsHost;
+
+      if (forceLogout) {
         const logoutMsg = JSON.stringify({ 
           type: "FORCE_LOGOUT", 
-          payload: { message: "Suas credenciais foram alteradas. Por favor, faça login novamente." } 
+          payload: { message: "Seus dados de acesso foram atualizados. Por favor, faça login novamente." } 
         });
         clients.forEach((info, client) => {
           if (info.userId === req.params.id) {
@@ -2529,6 +2938,27 @@ const app = express();
       res.sendFile(path.join(__dirname, "dist", "index.html"));
     });
   }
+
+  const server = app.listen(PORT, "0.0.0.0", async () => {
+    console.log(`[Server] Listening on http://0.0.0.0:${PORT}`);
+    
+    // Ensure sync is complete after port is bound if it hasn't already
+    await syncPromise;
+    console.log("[Server] Sync background task completed/ready.");
+    
+    try {
+      const userCount = db.prepare("SELECT COUNT(*) as count FROM users").get() as { count: number };
+      console.log(`[Database] Initialized with ${userCount.count} users`);
+    } catch (e) {
+      console.error("[Database] Error counting users:", e);
+    }
+  });
+
+  server.on('upgrade', (request, socket, head) => {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  });
 }
 
 startServer().catch(err => {

@@ -59,7 +59,9 @@ import {
   Smartphone,
   Layers,
   Battery,
-  Info
+  Info,
+  Store,
+  ShoppingCart
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Toaster, toast } from 'react-hot-toast';
@@ -84,6 +86,15 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+const formatCurrency = (value: number) => {
+  return new Intl.NumberFormat('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }).format(Math.round((value || 0) * 100) / 100);
+};
+
 // --- Helpers ---
 
 const generateHistoryPDF = (events: any[]) => {
@@ -96,6 +107,7 @@ const generateHistoryPDF = (events: any[]) => {
 
   const tableData = events.map(e => [
     format(new Date(e.timestamp), 'dd/MM/yyyy HH:mm'),
+    e.table_id ? `Mesa ${e.table_id}` : '-',
     e.username,
     e.action,
     e.details
@@ -103,7 +115,7 @@ const generateHistoryPDF = (events: any[]) => {
 
   autoTable(doc, {
     startY: 35,
-    head: [['Data', 'Usuário', 'Ação', 'Detalhes']],
+    head: [['Data', 'Mesa', 'Usuário', 'Ação', 'Detalhes']],
     body: tableData,
     theme: 'striped',
     headStyles: { fillColor: [16, 185, 129] },
@@ -137,11 +149,15 @@ const generateCashierPDF = (session: any, transactions: any[], billing: any) => 
   doc.setTextColor(0);
   doc.text('Resumo Financeiro', 14, 55);
   
+  const initialBalance = Number(session.initial_balance) || 0;
+  const totalVendas = Number(billing.total) || 0;
+  const totalSaidas = Number(billing.expenses) || 0;
+  
   const summaryData = [
-    ['Saldo Inicial', `R$ ${session.initial_balance.toFixed(2)}`],
-    ['Vendas Totais', `R$ ${billing.total.toFixed(2)}`],
-    ['Sangrias/Saídas', `R$ ${billing.expenses.toFixed(2)}`],
-    ['Saldo Final Esperado', `R$ ${(session.initial_balance + billing.total - billing.expenses).toFixed(2)}`]
+    ['Saldo Inicial', formatCurrency(initialBalance)],
+    ['Vendas Totais', formatCurrency(totalVendas)],
+    ['Sangrias/Saídas', formatCurrency(totalSaidas)],
+    ['Saldo Final Esperado', formatCurrency(initialBalance + totalVendas - totalSaidas)]
   ];
 
   autoTable(doc, {
@@ -155,7 +171,7 @@ const generateCashierPDF = (session: any, transactions: any[], billing: any) => 
   
   const paymentData = Object.entries(billing.byMethod).map(([method, amount]) => [
     normalizeMethod(method).toUpperCase(),
-    `R$ ${(amount as number).toFixed(2)}`
+    formatCurrency(amount as number)
   ]);
 
   autoTable(doc, {
@@ -173,7 +189,7 @@ const generateCashierPDF = (session: any, transactions: any[], billing: any) => 
     t.description,
     t.type === 'expense' ? 'SAÍDA' : 'ENTRADA',
     normalizeMethod(t.method).toUpperCase(),
-    `R$ ${t.amount.toFixed(2)}`
+    formatCurrency(t.amount)
   ]);
 
   autoTable(doc, {
@@ -189,7 +205,19 @@ const generateCashierPDF = (session: any, transactions: any[], billing: any) => 
   doc.save(`fechamento_caixa_${format(new Date(), 'yyyy-MM-dd_HHmm')}.pdf`);
 };
 
-const executePrint = (htmlContent: string) => {
+const printQueue: string[] = [];
+let isPrinting = false;
+
+const processPrintQueue = () => {
+  if (isPrinting || printQueue.length === 0) return;
+  
+  isPrinting = true;
+  const htmlContent = printQueue.shift();
+  if (!htmlContent) {
+    isPrinting = false;
+    return;
+  }
+
   const root = document.getElementById('root');
   let container = document.getElementById('print-container');
   
@@ -197,11 +225,6 @@ const executePrint = (htmlContent: string) => {
     container = document.createElement('div');
     container.id = 'print-container';
     document.body.appendChild(container);
-  }
-  
-  // Return early if already in the middle of a print to prevent double-hiding capturing "none"
-  if (container.style.display === 'block') {
-    return;
   }
   
   // Inject receipt content
@@ -244,6 +267,10 @@ const executePrint = (htmlContent: string) => {
         window.removeEventListener('afterprint', afterPrintHandler);
         document.removeEventListener('visibilitychange', visibilityHandler);
         clearTimeout(fallbackTimer);
+        
+        isPrinting = false;
+        // Process next item in queue with a small delay
+        setTimeout(processPrintQueue, 500);
       }
     };
     
@@ -262,75 +289,117 @@ const executePrint = (htmlContent: string) => {
   }, 400); // Wait enough time for the DOM layout to flush
 };
 
-export const printKitchenReceipt = (tableNumber: string, operator: string, itemsToPrint: Array<{ name: string, quantity: number, observation?: string }>, title: string = 'COMANDA - COZINHA') => {
+const executePrint = (htmlContent: string) => {
+  printQueue.push(htmlContent);
+  processPrintQueue();
+};
+
+const renderPrinterHeader = (settings: any) => {
+  if (!settings?.printer_header) return '';
+  return `<div style="text-align: center; margin-bottom: 10px; font-weight: bold; white-space: pre-wrap; font-size: 14px; border-bottom: 1px solid black; padding-bottom: 5px;">${settings.printer_header}</div>`;
+};
+
+export const printKitchenReceipt = (tableNumber: string, operator: string, itemsToPrint: Array<{ name: string, quantity: number, observation?: string, group?: string, customerName?: string }>, settings?: any, title: string = 'CUPOM NÃO FISCAL - COZINHA') => {
   if (!itemsToPrint || itemsToPrint.length === 0) return;
+
+  const aggregatedItems = itemsToPrint.reduce((acc: any[], item) => {
+    const existing = acc.find(i => i.name === item.name && i.observation === item.observation && i.group === item.group);
+    if (existing) {
+      existing.quantity += item.quantity;
+    } else {
+      acc.push({ ...item });
+    }
+    return acc;
+  }, []);
 
   const now = new Date();
   const timeStr = now.toLocaleTimeString();
   const dateStr = now.toLocaleDateString();
 
+  const customerName = aggregatedItems[0]?.customerName;
+
   const html = `
-    <div style="font-family: monospace; width: 80mm; margin: 0 auto; padding: 4mm; color: black; font-size: 14px;">
+    <div style="font-family: monospace; width: 80mm; margin: 0 auto; padding: 4mm; color: black; font-size: 14px; background: white;">
+      ${renderPrinterHeader(settings)}
       <h2 style="text-align: center; margin: 0 0 10px 0; font-size: 16px; font-weight: bold; text-transform: uppercase; border-bottom: 2px solid black; padding-bottom: 5px;">${title}</h2>
       <div style="text-align: center; margin-bottom: 10px; font-size: 12px; border-bottom: 1px dashed black; padding-bottom: 5px;">
         Mesa: <span style="font-size: 18px; text-decoration: underline;">${tableNumber}</span><br/>
+        ${customerName ? `Cliente: <span style="font-weight: bold;">${customerName}</span><br/>` : ''}
         Data: ${dateStr} ${timeStr}<br/>
-        Op/Garçom: ${operator}
+        Vendedor: ${operator}
       </div>
-      ${itemsToPrint.map(item => `
+      ${aggregatedItems.map(item => `
         <div style="display: flex; justify-content: space-between; margin-bottom: 5px; font-weight: bold;">
-          <span>${item.quantity}x ${item.name}</span>
+          <span>${item.quantity}x ${item.name} ${item.group ? `<span style="font-size: 11px; font-weight: normal;">-(${item.group})</span>` : ''}</span>
         </div>
-        ${item.observation ? `<div style="padding-left: 10px; font-size: 12px; font-style: italic; background: #f9f9f9; padding: 2px 5px; margin: 2px 0; border-left: 3px solid #666;">Obs: ${item.observation}</div>` : ''}
+        ${item.observation ? `<div style="padding-left: 10px; font-size: 14px; font-weight: bold; font-style: italic; background: #f9f9f9; padding: 2px 5px; margin: 2px 0; border-left: 3px solid #666;">Obs: ${item.observation}</div>` : ''}
       `).join('')}
       <div style="margin-top: 10px; border-top: 1px dashed black; padding-top: 5px; text-align: center; font-size: 10px;">
         -- Fim da Comanda --
       </div>
+      <div style="text-align: center; font-size: 10px; margin-top: 5px;">${settings?.printer_footer || ''}</div>
     </div>
   `;
 
   executePrint(html);
 };
 
-export const printTableBill = (table: any, orders: any[], operator: string, title: string = 'CONTA', serviceFeePercentage: number = 10) => {
+export const printTableBill = (table: any, orders: any[], operator: string, settings?: any, title: string = 'CUPOM NÃO FISCAL', serviceFeePercentage: number = 10) => {
   if (!table) return;
+
+  const aggregatedOrders = orders.reduce((acc: any[], order) => {
+    const existing = acc.find(o => o.item_name === order.item_name && o.item_price === order.item_price && (o.observation || '') === (order.observation || ''));
+    if (existing) {
+      existing.quantity += order.quantity;
+    } else {
+      acc.push({ ...order });
+    }
+    return acc;
+  }, []);
 
   const subtotal = orders.reduce((acc, o) => acc + (o.item_price * o.quantity), 0);
   const serviceFee = subtotal * (serviceFeePercentage / 100);
   const total = subtotal + serviceFee;
   const now = new Date();
+  
+  const isBalcao = table.number === -1 || table.type === 'balcao';
+  const tableDisplayLine = isBalcao 
+    ? `Balcão ${table.customer_name ? `(${table.customer_name})` : ''}<br/>`
+    : `Mesa: ${table.number} ${table.customer_name ? `(${table.customer_name})` : ''}<br/>`;
 
   const html = `
-    <div style="font-family: monospace; width: 80mm; margin: 0 auto; padding: 4mm; color: black;">
+    <div style="font-family: monospace; width: 80mm; margin: 0 auto; padding: 4mm; color: black; background: white;">
+      ${renderPrinterHeader(settings)}
       <div style="text-align: center;">
         <h2 style="margin: 0 0 5px 0; font-size: 16px; text-transform: uppercase; border-bottom: 2px solid black; padding-bottom: 5px; margin-bottom: 10px;">${title}</h2>
         <div style="border-bottom: 1px dashed black; margin-bottom: 10px; padding-bottom: 5px; font-size: 11px;">
-          Mesa: ${table.number} ${table.customer_name ? `(${table.customer_name})` : ''}<br/>
+          ${tableDisplayLine}
           Data: ${now.toLocaleDateString()} ${now.toLocaleTimeString()}<br/>
-          Atendente: ${operator}
+          Vendedor: ${operator}
         </div>
       </div>
-      ${orders.map(o => `
+      ${aggregatedOrders.map(o => `
         <div style="display: flex; justify-content: space-between; margin-bottom: 3px; font-size: 12px;">
           <span>${o.quantity}x ${o.item_name}</span>
-          <span>R$ ${(o.item_price * o.quantity).toFixed(2)}</span>
+          <span>${formatCurrency(o.item_price * o.quantity)}</span>
         </div>
       `).join('')}
       <div style="border-top: 1px dashed black; margin-top: 10px; padding-top: 5px; font-weight: bold; font-size: 12px; display: flex; justify-content: space-between; margin-bottom: 2px;">
         <span>SUBTOTAL</span>
-        <span>R$ ${subtotal.toFixed(2)}</span>
+        <span>${formatCurrency(subtotal)}</span>
       </div>
+      ${serviceFeePercentage > 0 ? `
       <div style="font-weight: bold; font-size: 12px; display: flex; justify-content: space-between; margin-bottom: 4px;">
         <span>TAXA DE SERVIÇO (${serviceFeePercentage}%)</span>
-        <span>R$ ${serviceFee.toFixed(2)}</span>
+        <span>${formatCurrency(serviceFee)}</span>
       </div>
+      ` : ''}
       <div style="border-top: 2px solid black; margin-top: 5px; padding-top: 5px; font-weight: bold; font-size: 15px; display: flex; justify-content: space-between; margin-bottom: 3px;">
         <span>TOTAL GERAL</span>
-        <span>R$ ${total.toFixed(2)}</span>
+        <span>${formatCurrency(total)}</span>
       </div>
-      <div style="margin-top: 15px; text-align: center; font-size: 10px; border-top: 1px solid #eee; padding-top: 5px;">
-        Obrigado pela preferência!<br/>
-        Volte Sempre!
+      <div style="margin-top: 15px; text-align: center; font-size: 10px; border-top: 1px solid #eee; padding-top: 5px; white-space: pre-wrap;">
+        ${settings?.printer_footer || 'Obrigado pela preferência!\nVolte Sempre!'}
       </div>
     </div>
   `;
@@ -338,27 +407,31 @@ export const printTableBill = (table: any, orders: any[], operator: string, titl
   executePrint(html);
 };
 
-export const printFinancialSlip = (title: string, data: any, operator: string) => {
+export const printFinancialSlip = (title: string, data: any, operator: string, settings?: any) => {
   const now = new Date();
 
   const html = `
-    <div style="font-family: monospace; width: 80mm; margin: 0 auto; padding: 4mm; color: black;">
-      <h2 style="text-align: center; border-bottom: 1px solid black; padding-bottom: 5px; font-size: 16px;">${title.toUpperCase()}</h2>
+    <div style="font-family: monospace; width: 80mm; margin: 0 auto; padding: 4mm; color: black; background: white;">
+      ${renderPrinterHeader(settings)}
+      <h2 style="text-align: center; border-bottom: 2px solid black; padding-bottom: 5px; font-size: 18px; margin-bottom: 10px; text-transform: uppercase;">${title}</h2>
       <div style="display: flex; justify-content: space-between; margin: 5px 0; font-size: 13px;"><span>Data/Hora:</span> <span>${now.toLocaleDateString()} ${now.toLocaleTimeString()}</span></div>
       <div style="display: flex; justify-content: space-between; margin: 5px 0; font-size: 13px;"><span>Operador:</span> <span>${operator}</span></div>
-      <hr style="margin: 10px 0;"/>
+      <hr style="margin: 10px 0; border: 1px dashed black;"/>
       ${Object.entries(data).map(([key, val]: [string, any]) => {
-        if (typeof val === 'object') {
+        if (typeof val === 'object' && val !== null) {
            return `
-             <div style="display: flex; justify-content: space-between; margin: 5px 0; font-size: 13px; font-weight: bold;"><span>${key.toUpperCase()}</span></div>
+             <div style="margin-top: 10px; margin-bottom: 5px; font-size: 15px; font-weight: bold; border-bottom: 1px solid #ccc;">${key.toUpperCase()}</div>
              ${Object.entries(val).map(([m, low]) => `
-               <div style="display: flex; justify-content: space-between; margin: 5px 0; font-size: 12px; opacity: 0.8; padding-left: 10px;"><span>${normalizeMethod(m).toUpperCase()}</span> <span>R$ ${Number(low).toFixed(2)}</span></div>
+               <div style="display: flex; justify-content: space-between; margin: 5px 0; font-size: 14px; padding-left: 5px;"><span>${normalizeMethod(m).toUpperCase()}</span> <span>${formatCurrency(Number(low))}</span></div>
              `).join('')}
            `;
         }
-        return `<div style="display: flex; justify-content: space-between; margin: 5px 0; font-size: 13px; font-weight: bold;"><span>${key.toUpperCase()}:</span> <span>R$ ${Number(val).toFixed(2)}</span></div>`;
+        const valNum = isNaN(Number(val)) ? val : Number(val);
+        const valStr = typeof valNum === 'number' ? formatCurrency(valNum) : valNum;
+        return `<div style="display: flex; justify-content: space-between; margin: 5px 0; font-size: 14px; font-weight: bold;"><span>${key.toUpperCase()}:</span> <span>${valStr}</span></div>`;
       }).join('')}
-      <div style="margin-top: 20px; border-top: 1px dashed black; padding-top: 10px; text-align: center; font-size: 10px;">Documento Interno</div>
+      <hr style="margin: 15px 0 10px 0; border: 1px dashed black;"/>
+      <div style="text-align: center; font-size: 12px; font-weight: bold;">${settings?.printer_footer || 'Fim do Relatório'}</div>
     </div>
   `;
 
@@ -536,14 +609,20 @@ const TableCard = ({ table, onClick, settings }: any) => {
 // --- Main App ---
 
 const CloseTableModalContent = ({ selectedTable, currentOrders, settings, user, sendWS, hasPermission, onClose }: any) => {
-  const [localServiceFee, setLocalServiceFee] = useState(parseFloat(settings.service_fee || '10'));
+  const isBalcao = selectedTable?.id === -1;
+  const subtotal = currentOrders.reduce((acc: number, o: any) => acc + ((o.item_price as number) || 0) * o.quantity, 0);
+  
+  // Initial service fee calculation
+  const defaultPercentage = parseFloat(settings.service_fee || '10');
+  const initialService = isBalcao ? 0 : (subtotal * (defaultPercentage / 100));
+  
+  const [serviceAmount, setServiceAmount] = useState(initialService);
   const [discount, setDiscount] = useState(0);
   const [paymentMethods, setPaymentMethods] = useState<Record<string, number>>({});
   const [showDiscountInput, setShowDiscountInput] = useState(false);
+  const [cashGiven, setCashGiven] = useState<number | ''>('');
 
-  const subtotal = currentOrders.reduce((acc: number, o: any) => acc + ((o.item_price as number) || 0) * o.quantity, 0);
-  const service = (subtotal as number) * (localServiceFee / 100);
-  const total = (subtotal as number) + (service as number) - (discount as number);
+  const total = (subtotal as number) + (serviceAmount as number) - (discount as number);
 
   const handleMethodToggle = (method: string) => {
     setPaymentMethods(prev => {
@@ -585,52 +664,67 @@ const CloseTableModalContent = ({ selectedTable, currentOrders, settings, user, 
     });
   };
 
-  const totalPaid = Object.values(paymentMethods).reduce((a, b) => (a as number) + (b as number), 0);
-  const isTotalValid = Math.abs((totalPaid as number) - (total as number)) < 0.01;
+  const totalPaid = Object.values(paymentMethods).reduce((a, b) => (a as number) + (b as number), 0) as number;
+  const isTotalValid = Math.abs((totalPaid) - (total as number)) < 0.01;
 
   return (
     <form onSubmit={(e) => {
       e.preventDefault();
-      if (!isTotalValid) return toast.error(`O valor total pago (R$ ${(totalPaid as number).toFixed(2)}) deve ser igual ao total da conta (R$ ${(total as number).toFixed(2)})`);
-      sendWS('TABLE_CLOSE', { 
-        tableId: selectedTable?.id, 
-        userId: user?.id, 
-        username: user?.username, 
-        paymentMethods: Object.keys(paymentMethods),
-        paymentDetails: paymentMethods,
-        subtotal,
-        serviceFee: localServiceFee,
-        discount,
-        total
-      });
+      if (!isTotalValid) return toast.error(`O valor total pago (${formatCurrency(totalPaid)}) deve ser igual ao total da conta (${formatCurrency(total as number)})`);
+      if (selectedTable?.id === -1) {
+        sendWS('BALCAO_DIRECT_SALE', { 
+          items: currentOrders,
+          userId: user?.id, 
+          username: user?.username, 
+          paymentMethods: Object.keys(paymentMethods),
+          paymentDetails: paymentMethods,
+          subtotal,
+          serviceFee: serviceAmount,
+          discount,
+          total
+        });
+      } else {
+        sendWS('TABLE_CLOSE', { 
+          tableId: selectedTable?.id, 
+          userId: user?.id, 
+          username: user?.username, 
+          paymentMethods: Object.keys(paymentMethods),
+          paymentDetails: paymentMethods,
+          subtotal,
+          serviceFee: serviceAmount,
+          discount,
+          total
+        });
+      }
       onClose();
     }} className="space-y-4">
       <div className="rounded-xl bg-emerald-50 p-4 border border-emerald-100 dark:bg-emerald-900/20 dark:border-emerald-800 space-y-3">
         <div className="flex justify-between text-sm text-emerald-700 dark:text-emerald-300">
           <span>Subtotal:</span>
-          <span className="font-bold">R$ {(subtotal as number).toFixed(2)}</span>
+          <span className="font-bold">{formatCurrency(subtotal)}</span>
         </div>
         
         <div className="flex items-center justify-between text-sm text-emerald-700 dark:text-emerald-300">
           <div className="flex items-center gap-2">
-            <span>Serviço (%):</span>
+            <span>Serviço (R$):</span>
             <input 
               type="number" 
-              value={localServiceFee === 0 ? '' : localServiceFee} 
-              placeholder="0"
-              disabled={!hasPermission('remove_service_fee') && localServiceFee === 0}
+              step="0.01"
+              value={serviceAmount === 0 ? '' : serviceAmount} 
+              placeholder="0.00"
+              disabled={!hasPermission('remove_service_fee') && serviceAmount > 0}
               onChange={(e) => {
                 const val = e.target.value === '' ? 0 : parseFloat(e.target.value);
-                if (val < localServiceFee && !hasPermission('remove_service_fee')) {
+                if (val < serviceAmount && !hasPermission('remove_service_fee')) {
                   toast.error('Sem permissão para remover ou diminuir taxa de serviço');
                   return;
                 }
-                setLocalServiceFee(val);
+                setServiceAmount(val);
               }}
-              className="w-12 rounded border border-emerald-200 bg-white px-1 py-0.5 text-xs focus:ring-emerald-500 dark:bg-zinc-800 dark:border-emerald-800 disabled:opacity-50"
+              className="w-20 rounded border border-emerald-200 bg-white px-1 py-0.5 text-xs focus:ring-emerald-500 dark:bg-zinc-800 dark:border-emerald-800 disabled:opacity-50"
             />
           </div>
-          <span className="font-bold">R$ {(service as number).toFixed(2)}</span>
+          <span className="font-bold">{formatCurrency(serviceAmount)}</span>
         </div>
 
         <div className="flex items-center justify-between text-sm text-rose-700 dark:text-rose-300">
@@ -661,12 +755,12 @@ const CloseTableModalContent = ({ selectedTable, currentOrders, settings, user, 
               </button>
             )}
           </div>
-          <span className="font-bold">R$ {(discount as number).toFixed(2)}</span>
+          <span className="font-bold">{formatCurrency(discount)}</span>
         </div>
 
         <div className="pt-3 border-t border-emerald-200 dark:border-emerald-800 flex justify-between text-lg font-bold text-emerald-900 dark:text-emerald-50">
           <span>Total:</span>
-          <span>R$ {(total as number).toFixed(2)}</span>
+          <span>{formatCurrency(total)}</span>
         </div>
       </div>
 
@@ -700,6 +794,7 @@ const CloseTableModalContent = ({ selectedTable, currentOrders, settings, user, 
                   <input
                     type="number"
                     step="0.01"
+                    min="0"
                     value={paymentMethods[method] === 0 ? '' : paymentMethods[method]}
                     placeholder="0.00"
                     onChange={(e) => handleAmountChange(method, e.target.value === '' ? 0 : parseFloat(e.target.value))}
@@ -708,6 +803,34 @@ const CloseTableModalContent = ({ selectedTable, currentOrders, settings, user, 
                 </div>
               </div>
             ))}
+            
+            {paymentMethods['dinheiro'] !== undefined && (
+              <div className="mt-4 p-3 rounded-lg border border-emerald-100 dark:border-emerald-900 bg-emerald-50/50 dark:bg-emerald-900/10 space-y-3">
+                <div className="flex items-center gap-3">
+                  <span className="text-xs font-bold text-emerald-700 dark:text-emerald-400 w-24">DINHEIRO RECEBIDO:</span>
+                  <div className="relative flex-1">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-emerald-600 dark:text-emerald-400 text-sm">R$</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min={paymentMethods['dinheiro']}
+                      value={cashGiven}
+                      placeholder={(Math.round(paymentMethods['dinheiro'] * 100) / 100).toFixed(2)}
+                      onChange={(e) => setCashGiven(e.target.value === '' ? '' : parseFloat(e.target.value))}
+                      className="w-full pl-9 pr-3 py-2 rounded-lg border border-emerald-200 text-sm focus:ring-emerald-500 bg-white dark:bg-zinc-900 dark:border-emerald-800 dark:text-emerald-100 placeholder:text-emerald-300 dark:placeholder:text-emerald-700"
+                    />
+                  </div>
+                </div>
+                {cashGiven !== '' && cashGiven > paymentMethods['dinheiro'] && (
+                  <div className="flex justify-between items-center text-emerald-800 dark:text-emerald-300 font-bold px-1">
+                    <span>Troco:</span>
+                    <span className="bg-emerald-100 dark:bg-emerald-900/50 px-2 py-1 rounded text-lg">
+                      {formatCurrency(cashGiven - paymentMethods['dinheiro'])}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -717,7 +840,7 @@ const CloseTableModalContent = ({ selectedTable, currentOrders, settings, user, 
           "text-center text-sm font-bold p-2 rounded-lg",
           isTotalValid ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-900/20" : "text-rose-600 bg-rose-50 dark:bg-rose-900/20"
         )}>
-          Pago: R$ {(totalPaid as number).toFixed(2)} / R$ {(total as number).toFixed(2)}
+          Pago: {formatCurrency(totalPaid)} / {formatCurrency(total as number)}
         </div>
         <Button type="submit" className="w-full py-6 text-lg">
           Finalizar Pagamento
@@ -953,7 +1076,7 @@ function TableManagement({ tables, sendWS, settings }: any) {
           const formData = new FormData(e.currentTarget);
           const data = {
             number: parseInt(formData.get('number') as string),
-            type: editingTable ? editingTable.type : formData.get('type')
+            type: formData.get('type')
           };
           if (editingTable) {
             sendWS('TABLE_EDIT_PERMANENT', { tableId: editingTable.id, ...data });
@@ -967,16 +1090,14 @@ function TableManagement({ tables, sendWS, settings }: any) {
             <label className="text-sm font-medium">Número da Mesa</label>
             <Input name="number" type="number" defaultValue={editingTable?.number} required />
           </div>
-          {!editingTable && (
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Tipo/Área</label>
-              <select name="type" defaultValue={tableTypes[0]?.id} className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100">
-                {tableTypes.map((t: any) => (
-                  <option key={t.id} value={t.id}>{t.name}</option>
-                ))}
-              </select>
-            </div>
-          )}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Tipo/Área</label>
+            <select name="type" defaultValue={editingTable ? editingTable.type : tableTypes[0]?.id} className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100">
+              {tableTypes.map((t: any) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+          </div>
           <Button type="submit" className="w-full">{editingTable ? "Salvar Alterações" : "Criar Mesa"}</Button>
         </form>
       </Modal>
@@ -1093,6 +1214,313 @@ function TableManagement({ tables, sendWS, settings }: any) {
   );
 }
 
+function BalcaoTab({ menu, categories, details, vibrate, user, onCheckout }: any) {
+  const [cart, setCart] = useState<any[]>([]);
+  const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const [activeGroup, setActiveGroup] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [editingObservation, setEditingObservation] = useState<string | null>(null);
+  const [observationText, setObservationText] = useState("");
+  const [isConfirmingSend, setIsConfirmingSend] = useState(false);
+
+  const addToCart = (item: any) => {
+    vibrate(30);
+    setCart(prev => {
+      const existing = prev.find(i => i.id === item.id);
+      if (existing) {
+        const filtered = prev.filter(i => i.id !== item.id);
+        return [...filtered, { ...existing, quantity: existing.quantity + 1 }];
+      }
+      return [...prev, { ...item, quantity: 1 }];
+    });
+    setSearch('');
+  };
+
+  const removeFromCart = (id: string) => { setCart(prev => prev.filter(i => i.id !== id)); };
+
+  const updateQuantity = (id: string, delta: number) => {
+    setCart(prev => prev.map(item => {
+      if (item.id === id) return { ...item, quantity: Math.max(1, item.quantity + delta) };
+      return item;
+    }));
+  };
+
+  const updateObservation = (id: string, obs: string) => {
+    setCart(prev => prev.map(item => {
+      if (item.id === id) return { ...item, observation: obs };
+      return item;
+    }));
+  };
+
+  const filteredMenu = useMemo(() => {
+    const filtered = menu.filter((item: any) => {
+      if (item.active === 0) return false;
+      if (search) {
+        const normalizedSearch = search.normalize('NFD').replace(/[\u0300-\u036f]/g, "").toLowerCase();
+        const normalizedName = item.name.normalize('NFD').replace(/[\u0300-\u036f]/g, "").toLowerCase();
+        return normalizedName.includes(normalizedSearch);
+      }
+      const matchesCategory = activeCategory ? item.type === activeCategory : true;
+      const matchesGroup = activeGroup ? item.category === activeGroup : true;
+      return matchesCategory && matchesGroup;
+    });
+    return filtered;
+  }, [menu, search, activeCategory, activeGroup]);
+
+  const groupedMenu = useMemo(() => {
+    const groups: { [key: string]: any[] } = {};
+    filteredMenu.forEach((item: any) => {
+      const groupName = item.category || 'Outros';
+      if (!groups[groupName]) groups[groupName] = [];
+      groups[groupName].push(item);
+    });
+    return Object.keys(groups).sort((a, b) => {
+      if (a === 'Outros') return 1;
+      if (b === 'Outros') return -1;
+      const groupA = details.find((g: any) => g.name === a);
+      const groupB = details.find((g: any) => g.name === b);
+      const orderA = groupA?.sort_order ?? 999;
+      const orderB = groupB?.sort_order ?? 999;
+      return orderA - orderB;
+    }).map(key => ({
+      name: key,
+      items: groups[key].sort((a: any, b: any) => a.name.localeCompare(b.name))
+    }));
+  }, [filteredMenu, details]);
+
+  return (
+    <div className="flex flex-col gap-4 h-full" style={{ minHeight: 'calc(100vh - 8rem)' }}>
+      <div className="flex items-center justify-between py-2 border-b border-zinc-200 dark:border-zinc-800">
+        <h3 className="text-zinc-600 font-bold dark:text-zinc-300">Venda Rápida de Balcão</h3>
+        {cart.length > 0 && (
+          <div className="flex items-center gap-3">
+            <span className="text-zinc-500 font-bold uppercase text-[10px] tracking-wider">Total</span>
+            <span className="text-emerald-600 dark:text-emerald-400 font-black text-xl">
+              {formatCurrency(cart.reduce((acc, i) => acc + (i.price * i.quantity), 0))}
+            </span>
+          </div>
+        )}
+      </div>
+      <div className="flex flex-col md:flex-row gap-6 flex-1 min-h-0">
+        {/* Left Col: Menu */}
+        <div className="flex-1 flex flex-col gap-4 overflow-y-auto overscroll-contain pr-2" style={{ WebkitOverflowScrolling: 'touch' }}>
+          <div className="sticky top-0 z-10 bg-zinc-50 dark:bg-zinc-950 pb-2 space-y-4">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
+              <input
+                type="text"
+                placeholder="Buscar itens..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full rounded-xl border border-zinc-200 bg-white py-3 pl-10 pr-4 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100 transition-all shadow-sm"
+              />
+            </div>
+            {!search && activeCategory && (
+              <div className="flex items-center justify-between bg-emerald-50 dark:bg-emerald-900/20 p-2 rounded-xl border border-emerald-100 dark:border-emerald-800/50 animate-in fade-in slide-in-from-top-2">
+                <div className="flex items-center gap-2 text-sm font-medium text-emerald-700 dark:text-emerald-400">
+                  <button onClick={() => { vibrate(20); setActiveCategory(null); setActiveGroup(null); }} className="hover:underline">Categorias</button>
+                  <ChevronRight className="h-4 w-4" />
+                  <span className="font-bold text-emerald-900 dark:text-emerald-100">{activeCategory}</span>
+                </div>
+                <Button variant="ghost" size="sm" className="h-8 px-3 text-xs font-bold bg-white dark:bg-zinc-900 shadow-sm border border-emerald-200 dark:border-emerald-800 text-emerald-600 hover:bg-emerald-50" onClick={() => { vibrate(20); setActiveCategory(null); setActiveGroup(null); }}>
+                  <ArrowLeft className="h-3.5 w-3.5 mr-1.5" /> Voltar
+                </Button>
+              </div>
+            )}
+          </div>
+
+          <div className="flex-1">
+            {search ? (
+              <div className="space-y-2">
+                {filteredMenu.map((item: any) => (
+                  <button key={item.id} onClick={() => { vibrate(30); addToCart(item); }} className="flex w-full items-center justify-between rounded-xl border border-zinc-100 bg-white p-4 hover:bg-zinc-50 transition-all hover:border-emerald-200 dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50 dark:hover:border-emerald-900/50 shadow-sm">
+                    <div className="text-left">
+                      <p className="text-sm font-bold dark:text-zinc-100">{item.name}</p>
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">{item.type} • {item.category} • {formatCurrency(item.price)}</p>
+                    </div>
+                    <div className="h-8 w-8 rounded-full bg-emerald-50 dark:bg-emerald-900/30 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
+                      <Plus className="h-4 w-4" />
+                    </div>
+                  </button>
+                ))}
+                {filteredMenu.length === 0 && (
+                  <div className="py-12 text-center space-y-2 border-2 border-dashed border-zinc-200 dark:border-zinc-800 rounded-xl">
+                    <Search className="h-12 w-12 text-zinc-200 dark:text-zinc-800 mx-auto" />
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400">Nenhum item encontrado para "{search}".</p>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <>
+                {!activeCategory ? (
+                  <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3 pb-4">
+                    {categories.map((c: any) => {
+                      const count = menu.filter((m: any) => m.active !== 0 && m.type === c.name).length;
+                      if (count === 0) return null;
+                      return (
+                        <button key={c.id} onClick={() => { vibrate(30); setActiveCategory(c.name); }} className="flex flex-col items-center justify-center gap-2 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm transition-all hover:border-emerald-500 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-emerald-500 group">
+                          <span className="text-sm font-bold text-zinc-900 dark:text-zinc-100 text-center leading-tight line-clamp-2">{c.name}</span>
+                          <div className="flex items-center gap-1 bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 rounded-full">
+                            <Tags className="h-3 w-3 text-zinc-400 dark:text-zinc-500" />
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">{count} itens</span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="space-y-8 pb-4">
+                    {groupedMenu.map(({ name: groupName, items }: any) => (
+                      <div key={groupName} className="space-y-3">
+                        <div className="flex items-center gap-3">
+                          <h4 className="text-xs font-black uppercase tracking-[0.2em] text-emerald-600 dark:text-emerald-500">{groupName}</h4>
+                          <div className="h-[2px] flex-1 bg-gradient-to-r from-emerald-100 to-transparent dark:from-emerald-900/30" />
+                        </div>
+                        <div className="grid sm:grid-cols-2 gap-3">
+                          {items.map((item: any) => (
+                            <button key={item.id} onClick={() => { vibrate(30); addToCart(item); }} className="flex w-full items-center justify-between rounded-xl border border-zinc-200 bg-white p-4 hover:bg-zinc-50 transition-all hover:border-emerald-500 hover:shadow-sm dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50 dark:hover:border-emerald-500 group">
+                              <div className="text-left">
+                                <p className="text-sm font-bold group-hover:text-emerald-700 dark:text-zinc-100 dark:group-hover:text-emerald-400 transition-colors">{item.name}</p>
+                                <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400 mt-1">{formatCurrency(item.price)}</p>
+                              </div>
+                              <div className="h-10 w-10 shrink-0 rounded-full bg-emerald-50 dark:bg-emerald-900/30 flex items-center justify-center text-emerald-600 dark:text-emerald-400 group-hover:bg-emerald-100 group-hover:scale-110 transition-all">
+                                <Plus className="h-5 w-5" />
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Right Col: Cart */}
+        <div className="w-full md:w-96 flex flex-col bg-white dark:bg-zinc-900 rounded-3xl border border-zinc-200 dark:border-zinc-800 overflow-hidden shadow-sm shrink-0">
+          <div className="p-4 border-b border-zinc-100 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/50 flex items-center justify-between">
+            <h4 className="font-bold flex items-center gap-2 text-zinc-900 dark:text-zinc-100">
+              <ShoppingCart className="h-5 w-5 text-emerald-600" />
+              Pedido
+            </h4>
+            {cart.length > 0 && (
+              <span className="bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400 px-2.5 py-1 rounded-full text-xs font-bold shadow-sm">
+                {cart.reduce((acc, item) => acc + item.quantity, 0)} itens
+              </span>
+            )}
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-4 space-y-3" style={{ WebkitOverflowScrolling: 'touch' }}>
+            {cart.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center text-zinc-400 space-y-3">
+                <div className="w-16 h-16 rounded-full bg-zinc-50 dark:bg-zinc-800/50 flex items-center justify-center">
+                  <ShoppingCart className="h-8 w-8 text-zinc-300 dark:text-zinc-600" />
+                </div>
+                <p className="font-medium text-sm">Adicione produtos</p>
+              </div>
+            ) : (
+              [...cart].reverse().map(item => (
+                <div key={item.id} className="flex flex-col gap-2 rounded-2xl bg-zinc-50 p-3 pt-4 text-sm dark:bg-zinc-800 border border-transparent hover:border-zinc-200 dark:hover:border-zinc-700 transition-colors">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex flex-col gap-1 w-full">
+                      <span className="dark:text-zinc-200 font-bold leading-tight">{item.name}</span>
+                      <span className="text-zinc-500 font-medium text-xs">{formatCurrency(item.price * item.quantity)}</span>
+                    </div>
+                    
+                    <div className="flex flex-col items-end gap-2 shrink-0">
+                      <div className="flex items-center rounded-xl bg-white dark:bg-zinc-900 shadow-sm border border-zinc-200 dark:border-zinc-700">
+                        <button onClick={() => updateQuantity(item.id, -1)} className="p-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-l-xl disabled:opacity-50 text-zinc-600 dark:text-zinc-400" disabled={item.quantity <= 1}>
+                          <Minus className="h-4 w-4" />
+                        </button>
+                        <span className="w-8 text-center text-sm font-bold text-emerald-600 dark:text-emerald-400">{item.quantity}</span>
+                        <button onClick={() => updateQuantity(item.id, 1)} className="p-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-r-xl text-zinc-600 dark:text-zinc-400">
+                          <Plus className="h-4 w-4" />
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button onClick={() => { if (editingObservation === item.id) setEditingObservation(null); else { setEditingObservation(item.id); setObservationText(item.observation || ''); } }} className={cn("p-1.5 rounded-lg transition-colors", item.observation ? "text-amber-600 bg-amber-50 dark:text-amber-400 dark:bg-amber-900/30" : "text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700")}>
+                          <MessageSquareText className="h-4 w-4" />
+                        </button>
+                        <button onClick={() => removeFromCart(item.id)} className="text-rose-500 hover:bg-rose-100 p-1.5 rounded-lg dark:hover:bg-rose-900/20 transition-colors">
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  {editingObservation === item.id ? (
+                    <div className="flex items-center gap-2 mt-1">
+                      <Input autoFocus value={observationText} onChange={(e) => setObservationText(e.target.value)} placeholder="Ex: Sem cebola..." className="h-9 text-xs flex-1 rounded-xl" onKeyDown={(e) => { if (e.key === 'Enter') { updateObservation(item.id, observationText); setEditingObservation(null); } else if (e.key === 'Escape') setEditingObservation(null); }} />
+                      <Button size="sm" className="h-9 px-3 rounded-xl" onClick={() => { updateObservation(item.id, observationText); setEditingObservation(null); }}>Salvar</Button>
+                    </div>
+                  ) : item.observation ? (
+                    <div className="text-xs text-amber-600 dark:text-amber-400 italic bg-amber-50/50 dark:bg-amber-900/10 p-2 rounded-lg border border-amber-100 dark:border-amber-900/30 flex items-center gap-1.5 mt-1">
+                      <StickyNote className="h-3.5 w-3.5 shrink-0" />
+                      <span className="line-clamp-2">{item.observation}</span>
+                    </div>
+                  ) : null}
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="p-4 border-t border-zinc-100 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-900/50 space-y-4">
+            <div className="flex justify-between items-center px-1">
+              <span className="text-zinc-500 font-medium font-bold">Resumo Financeiro</span>
+              <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400">
+                {formatCurrency(cart.reduce((acc, i) => acc + (i.price * i.quantity), 0))}
+              </span>
+            </div>
+            <Button disabled={cart.length === 0} className="w-full h-14 text-lg font-bold rounded-2xl shadow-lg shadow-emerald-600/20" onClick={() => setIsConfirmingSend(true)}>
+              Avançar
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      <Modal isOpen={isConfirmingSend} onClose={() => setIsConfirmingSend(false)} title="Confirmar Balcão" maxWidth="max-w-md">
+        <div className="space-y-6">
+          <div className="p-4 bg-emerald-50 dark:bg-emerald-900/20 rounded-2xl border border-emerald-100 dark:border-emerald-800/50 flex flex-col items-center text-center gap-2">
+            <Store className="h-8 w-8 text-emerald-600 dark:text-emerald-500" />
+            <h4 className="font-bold text-emerald-900 dark:text-emerald-100">Balcão Expresso</h4>
+            <p className="text-sm text-emerald-700 dark:text-emerald-400">Ao confirmar, o pedido é enviado à cozinha e a tela de pagamento abrirá automaticamente.</p>
+          </div>
+          
+          <div className="space-y-4">
+            <div className="max-h-40 overflow-y-auto border rounded-xl divide-y bg-zinc-50 dark:bg-zinc-900/50 dark:border-zinc-800">
+              {[...cart].reverse().map(item => (
+                <div key={item.id} className="p-3 text-sm flex justify-between">
+                  <span>{item.quantity}x {item.name}</span>
+                  <span className="text-zinc-500 font-medium">{formatCurrency(item.price * item.quantity)}</span>
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-between items-center text-xl font-black border-t pt-4 px-2">
+              <span>TOTAL</span>
+              <span className="text-emerald-600">{formatCurrency(cart.reduce((acc, i) => acc + (i.price * i.quantity), 0))}</span>
+            </div>
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
+            <Button variant="outline" className="flex-1 py-4 font-bold rounded-2xl" onClick={() => setIsConfirmingSend(false)}>Cancelar</Button>
+            <Button 
+              className="bg-emerald-600 hover:bg-emerald-700 flex-[2] py-4 font-black rounded-2xl text-lg shadow-lg" 
+              onClick={() => {
+                vibrate([50, 100, 50]);
+                onCheckout(cart);
+                setCart([]);
+                setIsConfirmingSend(false);
+              }}
+            >
+              Confirmar
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
 export default function App() {
   const [user, setUser] = useState<User | null>(() => {
     if (typeof window !== 'undefined') {
@@ -1130,11 +1558,13 @@ export default function App() {
   }, [isLoggedIn, user]);
 
   const [transferRequests, setTransferRequests] = useState<any[]>([]);
-  const [activeTab, setActiveTab] = useState<'mesas' | 'cardapio' | 'historico' | 'config' | 'gestao' | 'tarefas'>('mesas');
+  const [activeTab, setActiveTab] = useState<'mesas' | 'balcao' | 'cardapio' | 'historico' | 'config' | 'gestao' | 'tarefas'>('mesas');
+  const [directBalcaoOrders, setDirectBalcaoOrders] = useState<any[]>([]);
   
   // State from server
   const [tables, setTables] = useState<Table[]>([]);
   const [menu, setMenu] = useState<MenuItem[]>([]);
+  const [stockPurchases, setStockPurchases] = useState<any[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
   const [details, setDetails] = useState<any[]>([]);
   const [historyEvents, setHistoryEvents] = useState<any[]>([]);
@@ -1153,12 +1583,6 @@ export default function App() {
       return localStorage.getItem('theme') === 'dark';
     }
     return false;
-  });
-  const [displayScale, setDisplayScale] = useState(() => {
-    if (typeof window !== 'undefined') {
-      return localStorage.getItem('displayScale') || '100';
-    }
-    return '100';
   });
   const [fontSize, setFontSize] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -1212,7 +1636,7 @@ export default function App() {
   }, [menu]);
 
   const hasPermission = (permission: string) => {
-    if (user?.role === 'host') return true;
+    if (user?.role === 'host' || user?.username === 'Dev') return true;
     if (!user?.role) return false;
     const perms = settings[`permissions_${user.role}`];
     if (!perms) return false;
@@ -1227,12 +1651,10 @@ export default function App() {
   useEffect(() => {
     if (typeof window !== 'undefined') {
       document.documentElement.style.fontSize = `${fontSize}px`;
-      document.body.style.zoom = (parseInt(displayScale) / 100).toString();
-      localStorage.setItem('displayScale', displayScale);
       localStorage.setItem('fontSize', fontSize);
       localStorage.setItem('vibrationEnabled', String(vibrationEnabled));
     }
-  }, [displayScale, fontSize, vibrationEnabled]);
+  }, [fontSize, vibrationEnabled]);
 
   const [notificationsEnabled, setNotificationsEnabled] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -1441,6 +1863,9 @@ export default function App() {
         case 'DETAILS_UPDATE':
           setDetails(data.payload);
           break;
+        case 'STOCK_SYNC':
+          setStockPurchases(data.payload);
+          break;
         case 'HISTORY_UPDATE':
           setHistoryEvents(data.payload);
           break;
@@ -1460,6 +1885,14 @@ export default function App() {
             const newOrders = data.payload.filter((newOrder: any) => !prev.some(o => o.id === newOrder.id));
             return [...prev, ...newOrders];
           });
+          break;
+        case 'BALCAO_CHECKOUT_TRIGGER':
+          // Legacy flow, direct checkout used instead
+          break;
+        case 'BALCAO_DIRECT_SALE_SUCCESS':
+          if (data.payload.userId === user?.id) {
+            setDirectBalcaoOrders([]);
+          }
           break;
         case 'ORDER_DELETED':
           setAllOrders(prev => prev.filter(o => o.id !== data.payload.orderId));
@@ -1490,7 +1923,7 @@ export default function App() {
                       <Button size="sm" onClick={() => {
                         if (['table_bill', 'table_close'].includes(data.payload.type)) {
                           const fee = parseFloat(settingsRef.current?.service_fee || '10');
-                          printTableBill(data.payload.table, data.payload.orders, data.payload.operator, data.payload.title || 'CONTA', fee);
+                          printTableBill(data.payload.table, data.payload.orders, data.payload.operator, settingsRef.current, data.payload.title || 'CONTA', fee);
                         } else if (['cashier_slip', 'cashier_open', 'cashier_close'].includes(data.payload.type)) {
                           printFinancialSlip(data.payload.title, data.payload.data, data.payload.operator);
                         }
@@ -1503,12 +1936,12 @@ export default function App() {
             } else {
                 // "Direct" printing (no interaction needed in the app, browser dialog still appears as intended)
                 if (data.payload.type === 'order_kitchen') {
-                  printKitchenReceipt(data.payload.tableNumber, data.payload.operator, data.payload.items, data.payload.title || 'COMANDA - COZINHA');
+                  printKitchenReceipt(data.payload.tableNumber, data.payload.operator, data.payload.items, settingsRef.current, data.payload.title || 'COMANDA - COZINHA');
                 } else if (['table_bill', 'table_close'].includes(data.payload.type)) {
                   const fee = parseFloat(settingsRef.current?.service_fee || '10');
-                  printTableBill(data.payload.table, data.payload.orders, data.payload.operator, data.payload.title || 'CONTA', fee);
+                  printTableBill(data.payload.table, data.payload.orders, data.payload.operator, settingsRef.current, data.payload.title || 'CONTA', fee);
                 } else if (['cashier_slip', 'cashier_open', 'cashier_close'].includes(data.payload.type)) {
-                  printFinancialSlip(data.payload.title, data.payload.data, data.payload.operator);
+                  printFinancialSlip(data.payload.title, data.payload.data, data.payload.operator, settingsRef.current);
                 }
             }
           }
@@ -1733,6 +2166,18 @@ export default function App() {
               }} 
             />
           )}
+          {hasPermission('mesas') && (
+            <SidebarItem 
+              icon={<Store />} 
+              label="Balcão" 
+              active={activeTab === 'balcao'} 
+              onClick={() => { 
+                vibrate(20);
+                setActiveTab('balcao'); 
+                setIsSidebarOpen(false); 
+              }} 
+            />
+          )}
           {hasPermission('historico') && (
             <SidebarItem 
               icon={<History />} 
@@ -1779,6 +2224,7 @@ export default function App() {
               }} 
             />
           )}
+
           {hasPermission('gestao') && (
             <SidebarItem 
               icon={<Database />} 
@@ -1824,10 +2270,10 @@ export default function App() {
           </Button>
 
           <div className="mt-4 px-2 text-[10px] text-zinc-400 dark:text-zinc-500 space-y-1 border-t border-zinc-100 pt-4 dark:border-zinc-800/50">
-            <p className="font-medium text-zinc-400">Versão 1.1.5 beta</p>
+            <p className="font-medium">Versão 1.1.6 beta</p>
             <div className="opacity-70">
-              <p>Created by: Abiner</p>
-              <p>Email for contact: abinerfelipe@gmail.com</p>
+              <p>Criado por: Abiner</p>
+              <p>E-mail para contato: abinerfelipe@gmail.com</p>
             </div>
           </div>
         </div>
@@ -1843,7 +2289,7 @@ export default function App() {
 
       {/* Main Content */}
       <main className="flex flex-1 flex-col overflow-hidden overscroll-none touch-pan-y min-h-0">
-        <header className="flex h-[calc(4rem+env(safe-area-inset-top))] items-end justify-between border-b border-zinc-200 bg-white px-4 pb-4 md:px-6 dark:bg-zinc-900 dark:border-zinc-800">
+        <header className="flex h-[calc(4rem+env(safe-area-inset-top))] items-end justify-between border-b border-zinc-200 bg-white px-4 pb-4 dark:bg-zinc-900 dark:border-zinc-800">
           <div className="flex items-center gap-4">
             <button 
               onClick={() => {
@@ -1886,8 +2332,8 @@ export default function App() {
                 );
               }}
             >
-              <RefreshCw className="h-4 w-4 md:mr-1" />
-              <span className="hidden md:inline text-[10px] font-bold uppercase">Sincronizar</span>
+              <RefreshCw className="h-4 w-4 mr-1 md:mr-1" />
+              <span className="inline text-[10px] font-bold uppercase">Sincronizar</span>
             </Button>
             {activeTab === 'mesas' && (
               <div className="flex items-center gap-2 text-[10px]">
@@ -1899,22 +2345,51 @@ export default function App() {
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto overscroll-none p-4 md:p-6 pb-24 md:pb-12" style={{ WebkitOverflowScrolling: 'touch' }}>
+        <div className="flex-1 overflow-y-auto overscroll-none p-4 pb-24 md:pb-8" style={{ WebkitOverflowScrolling: 'touch' }}>
           {activeTab === 'mesas' && (
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
-              {tables.map((table) => (
-                <TableCard 
-                  key={table.id} 
-                  table={table} 
-                  settings={settings}
-                  onClick={() => {
-                    vibrate(30);
-                    setSelectedTable(table);
-                    setIsTableModalOpen(true);
-                  }} 
-                />
-              ))}
+            <div className="space-y-6">
+              <div className="flex items-center gap-4 py-2 border-b border-zinc-200 dark:border-zinc-800">
+                <h3 className="text-zinc-600 font-bold dark:text-zinc-300">Mesas</h3>
+              </div>
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+                {tables.map((table) => (
+                  <TableCard 
+                    key={table.id} 
+                    table={table} 
+                    settings={settings}
+                    onClick={() => {
+                      vibrate(30);
+                      setSelectedTable(table);
+                      setIsTableModalOpen(true);
+                    }} 
+                  />
+                ))}
+              </div>
             </div>
+          )}
+
+          {activeTab === 'balcao' && (
+            <BalcaoTab
+              menu={sortedMenu}
+              categories={sortedCategories}
+              details={sortedGroups}
+              vibrate={vibrate}
+              user={user}
+              onCheckout={(items: any[]) => {
+                setSelectedTable({ id: -1, number: -1, type: 'balcao', status: 'open', customer_name: 'Balcão' } as any);
+                setDirectBalcaoOrders(items.map(i => ({
+                  menu_item_id: i.id,
+                  quantity: i.quantity,
+                  observation: i.observation,
+                  item_name: i.name,
+                  item_price: i.price,
+                  print_enabled: i.print_enabled,
+                  group: i.category,
+                  category: i.type
+                })));
+                setIsCloseTableModalOpen(true);
+              }}
+            />
           )}
 
           {activeTab === 'tarefas' && (
@@ -1958,6 +2433,7 @@ export default function App() {
                 sendWS('HISTORY_CLEAR', { userId: user?.id, username: user?.username });
               }}
               currentUser={user}
+              stockPurchases={stockPurchases}
               settings={settings}
               hasPermission={hasPermission}
               users={users}
@@ -1984,6 +2460,7 @@ export default function App() {
           {activeTab === 'historico' && (
             <HistoryTab 
               events={historyEvents} 
+              menu={sortedMenu}
               canMarkRead={hasPermission('mark_history_read')}
               onMarkRead={(historyId: string) => {
                 sendWS('HISTORY_MARK_READ', { historyId, userId: user?.id, username: user?.username });
@@ -1992,6 +2469,32 @@ export default function App() {
               onApproveTransfer={(requestId: string) => sendWS('TABLE_TRANSFER_APPROVE', { requestId, userId: user?.id, username: user?.username })}
               onRejectTransfer={(requestId: string) => sendWS('TABLE_TRANSFER_REJECT', { requestId, userId: user?.id, username: user?.username })}
               hasTransferPermission={hasPermission('transfer_table')}
+              hasReprintPermission={hasPermission('reprint_history')}
+              onReprintHistory={(event: any) => {
+                // Determine format
+                const isKitchenOrder = event.action === 'NOVO_PEDIDO' || event.action === 'EXCLUIR_PEDIDO';
+                
+                if (isKitchenOrder && event.details) {
+                  // Reconstruct kitchen order for print
+                  const match = event.details.match(/^(\d+)x (.*?)(?: -\(.*?\))?$/);
+                  const name = match ? match[2].trim() : event.details.split(' - ')[1]?.replace(/-\(.*?\)|\(.*?\)/g, '').trim() || event.details;
+                  
+                  const mockItem = {
+                    name: name,
+                    quantity: parseInt(event.details.match(/^(\d+)x/)?.[1] || '1'),
+                    group: event.details.match(/\((.*?)\)/)?.[1] || '',
+                    observation: ''
+                  };
+                  printKitchenReceipt(String(event.table_id || 'Avulso'), String(event.username), [mockItem] as any, "[SEGUNDA VIA]");
+                  toast.success('Segunda via enviada para impressão!');
+                } else {
+                  toast('Impressão de via disponível apenas para itens de pedido de cozinha nesta atualização.', { icon: 'ℹ️' });
+                }
+              }}
+              hasDeletePermission={hasPermission('delete_history')}
+              onDeleteHistory={(historyId: string) => {
+                sendWS('HISTORY_DELETE', { historyId });
+              }}
             />
           )}
 
@@ -2001,8 +2504,6 @@ export default function App() {
               settings={settings}
               darkMode={darkMode}
               setDarkMode={setDarkMode}
-              displayScale={displayScale}
-              setDisplayScale={setDisplayScale}
               fontSize={fontSize}
               setFontSize={setFontSize}
               vibrationEnabled={vibrationEnabled}
@@ -2041,6 +2542,23 @@ export default function App() {
                 }
               }}
               hasPermission={hasPermission}
+              tables={tables}
+              onAddMenu={() => setIsAddMenuModalOpen(true)}
+              onEditMenu={(item: any) => {
+                setEditingMenuItem(item);
+                setIsEditMenuModalOpen(true);
+              }}
+              stockPurchases={stockPurchases}
+              vibrate={vibrate}
+              onlineUsers={onlineUsers}
+              cashierStatus={cashierStatus}
+              cashierTransactions={cashierTransactions}
+              accountsPayable={accountsPayable}
+              managePrinterHub={managePrinterHub}
+              setManagePrinterHub={setManagePrinterHub}
+              printerHubUserRestriction={printerHubUserRestriction}
+              setPrinterHubUserRestriction={setPrinterHubUserRestriction}
+              allOrders={allOrders}
             />
           )}
         </div>
@@ -2110,10 +2628,10 @@ export default function App() {
         </div>
       </Modal>
 
-      <Modal isOpen={isCloseTableModalOpen} onClose={() => setIsCloseTableModalOpen(false)} title="Fechar Mesa">
+      <Modal isOpen={isCloseTableModalOpen} onClose={() => setIsCloseTableModalOpen(false)} title={selectedTable?.id === -1 ? "Finalizar Venda Balcão" : "Fechar Mesa"}>
         <CloseTableModalContent 
           selectedTable={selectedTable}
-          currentOrders={currentOrders}
+          currentOrders={selectedTable?.id === -1 ? directBalcaoOrders : currentOrders}
           settings={settings}
           user={user}
           sendWS={sendWS}
@@ -2132,8 +2650,31 @@ export default function App() {
         categories={sortedCategories}
         details={sortedGroups}
         vibrate={vibrate}
-        onSend={(items) => {
+        isDirectCheckout={selectedTable?.type === 'balcao'}
+        onSend={(items: any[]) => {
           vibrate([50, 30, 50]);
+          
+          if (selectedTable?.type === 'balcao') {
+            // Initiate fast track flow for 'balcão'
+            sendWS('TABLE_OPEN', { tableId: selectedTable.id, customerName: 'Avulso', peopleCount: 1, tableType: 'balcao' });
+            sendWS('ORDER_SEND', { tableId: selectedTable.id, userId: user?.id, username: user?.username, items, isBalcao: true });
+            
+            if (settings?.manage_printer !== false) {
+              const printableItems = items.filter((i: any) => i.print_enabled !== 0 && i.print_enabled !== false);
+              if (printableItems.length > 0) {
+                printKitchenReceipt('Balcão', user?.username || 'Sistema', printableItems);
+              }
+            }
+            
+            setIsOrderModalOpen(false);
+            
+            // Allow state to catch up for orders to be injected to closed modal
+            setTimeout(() => {
+               setIsCloseTableModalOpen(true);
+            }, 500);
+            return;
+          }
+          
           sendWS('ORDER_SEND', { tableId: selectedTable?.id, userId: user?.id, username: user?.username, items });
           
           if (settings?.manage_printer !== false) {
@@ -2244,6 +2785,18 @@ function TableActionsModal({ isOpen, onClose, table, orders, isHost, onOpenTable
   
   const tableTypes = JSON.parse(settings?.table_types || '[{"id":"salao","name":"Salão","color":"#10b981"},{"id":"gramado","name":"Gramado","color":"#3b82f6"}]');
   const [tableType, setTableType] = useState<string>(tableTypes[0]?.id || 'salao');
+
+  const aggregatedOrders = useMemo(() => {
+    const groups: { [key: string]: any } = {};
+    orders.forEach((o: any) => {
+      const key = `${o.item_name}-${o.observation || ''}-${o.group || ''}`;
+      if (!groups[key]) {
+        groups[key] = { ...o, quantity: 0 };
+      }
+      groups[key].quantity += o.quantity;
+    });
+    return Object.values(groups).sort((a: any, b: any) => b.timestamp.localeCompare(a.timestamp));
+  }, [orders]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -2435,10 +2988,23 @@ function TableActionsModal({ isOpen, onClose, table, orders, isHost, onOpenTable
                       const formData = new FormData(e.currentTarget);
                       onUpdateTable({
                         customerName: formData.get('name'),
-                        peopleCount: parseInt(formData.get('people') as string) || 0
+                        peopleCount: parseInt(formData.get('people') as string) || 0,
+                        tableType: formData.get('tableType')
                       });
                       setIsEditing(false);
                     }} className="space-y-3">
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium dark:text-zinc-300">Tipo da Mesa</label>
+                        <select 
+                          name="tableType" 
+                          defaultValue={table.type || 'salao'}
+                          className="w-full h-8 rounded-md border border-zinc-200 bg-white px-3 text-xs dark:bg-zinc-950 dark:border-zinc-800 dark:text-zinc-200"
+                        >
+                          {tableTypes.map((t: any) => (
+                            <option key={t.id} value={t.id}>{t.name}</option>
+                          ))}
+                        </select>
+                      </div>
                       <div className="space-y-1">
                         <label className="text-xs font-medium dark:text-zinc-300">Nome</label>
                         <Input name="name" defaultValue={table.customer_name} className="h-8 text-sm" />
@@ -2456,13 +3022,19 @@ function TableActionsModal({ isOpen, onClose, table, orders, isHost, onOpenTable
                 </div>
 
                 <div className="space-y-2">
-                  <h4 className="text-xs font-bold uppercase text-zinc-400">Pedidos Atuais</h4>
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-bold uppercase text-zinc-400">Pedidos Atuais</h4>
+                    <div className="text-[10px] font-black text-emerald-600 flex items-center gap-1">
+                      <span className="text-zinc-500 uppercase font-bold">Total:</span>
+                      {formatCurrency(orders.reduce((acc: number, o: any) => acc + (o.item_price * o.quantity), 0))}
+                    </div>
+                  </div>
                   <div className="max-h-[300px] md:max-h-[400px] overflow-y-auto overscroll-contain rounded-lg border border-zinc-100 bg-white dark:bg-zinc-900 dark:border-zinc-800" style={{ WebkitOverflowScrolling: 'touch' }}>
                     {orders.length === 0 ? (
                       <p className="p-4 text-center text-xs text-zinc-400 dark:text-zinc-500">Nenhum pedido realizado</p>
                     ) : (
                       <div className="divide-y divide-zinc-50 dark:divide-zinc-800">
-                        {orders.map((order: any) => (
+                        {aggregatedOrders.map((order: any) => (
                           <div key={order.id} className="flex flex-col p-3 text-sm">
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-3">
@@ -2534,7 +3106,7 @@ function MenuTab({ menu, categories = [], details = [], canEdit, onAdd, onEdit, 
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const [sortBy, setSortBy] = useState('alphabetical');
+  const [sortBy, setSortBy] = useState('category');
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, title: '', message: '', onConfirm: () => {} });
 
   const filteredMenu = useMemo(() => {
@@ -2554,10 +3126,16 @@ function MenuTab({ menu, categories = [], details = [], canEdit, onAdd, onEdit, 
     if (!activeCategory) {
       switch (sortBy) {
         case 'alphabetical':
-          items = [...items].sort((a, b) => a.name.localeCompare(b.name));
+          items = [...items].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR', { sensitivity: 'base', numeric: true }));
           break;
         case 'recent':
-          items = [...items].sort((a, b) => b.id.localeCompare(a.id));
+          items = [...items].sort((a, b) => {
+            const timeA = new Date(a.created_at || 0).getTime() || 0;
+            const timeB = new Date(b.created_at || 0).getTime() || 0;
+            if (timeB !== timeA) return timeB - timeA;
+            // Fallback to ID if timestamps are missing or equal
+            return (b.id || "").toString().localeCompare((a.id || "").toString());
+          });
           break;
         case 'active':
           items = items.filter((i: any) => i.active !== 0);
@@ -2641,7 +3219,7 @@ function MenuTab({ menu, categories = [], details = [], canEdit, onAdd, onEdit, 
             {item.active === 0 && <span className="rounded bg-zinc-200 px-1.5 py-0.5 text-[9px] font-bold text-zinc-600 dark:bg-zinc-700 dark:text-zinc-400">INATIVO</span>}
             {item.print_enabled !== 0 && <Printer className="h-3 w-3 text-emerald-500" />}
           </div>
-          <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">{item.type} &gt; {item.category} • R$ {item.price.toFixed(2)}</p>
+          <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">{item.type} &gt; {item.category} • {formatCurrency(item.price)}</p>
         </div>
       </div>
       {canEdit && (
@@ -2853,6 +3431,173 @@ function ConfirmModal({ isOpen, onClose, onConfirm, title, message }: any) {
           <Button variant="danger" onClick={() => { onConfirm(); onClose(); }}>Confirmar</Button>
         </div>
       </div>
+    </Modal>
+  );
+}
+
+function StockTab({ menu, stockPurchases, onWS, user }: any) {
+  const [purchaseModal, setPurchaseModal] = useState({ isOpen: false, item: null as any });
+  const [filter, setFilter] = useState('');
+  
+  const stockItems = menu.filter((item: any) => item.is_stockable === 1);
+  const filteredStockItems = stockItems.filter((item: any) => 
+    item.name.toLowerCase().includes(filter.toLowerCase())
+  );
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div>
+          <h3 className="text-lg font-bold text-zinc-900 dark:text-zinc-100">Controle de Estoque</h3>
+          <p className="text-sm text-zinc-500">Gerencie entradas e consulte saldo de produtos</p>
+        </div>
+        <div className="relative w-full sm:w-64">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-400" />
+          <Input 
+            placeholder="Filtrar por nome..." 
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            className="pl-10"
+          />
+        </div>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-2">
+        {filteredStockItems.map((item: any) => (
+          <div key={item.id} className="p-4 rounded-xl border border-zinc-200 bg-zinc-50/50 dark:bg-zinc-800/30 dark:border-zinc-800 flex flex-col justify-between">
+            <div>
+              <div className="flex justify-between items-start">
+                <h4 className="font-bold text-zinc-900 dark:text-zinc-100">{item.name}</h4>
+                {item.is_solid === 1 && (
+                  <span className="text-[10px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded uppercase font-bold dark:bg-emerald-900/30 dark:text-emerald-400 shrink-0">Sólido</span>
+                )}
+              </div>
+              <p className="text-xs text-zinc-500 mt-1">{item.type} • {item.category}</p>
+              
+              <div className="mt-4 flex items-end gap-2">
+                <span className={cn(
+                  "text-3xl font-black",
+                  (item.current_stock || 0) <= 5 ? "text-rose-600" : "text-emerald-600"
+                )}>
+                  {item.current_stock || 0}
+                </span>
+                <span className="text-xs font-bold text-zinc-400 mb-1.5 uppercase">Unidades em estoque</span>
+              </div>
+            </div>
+
+            <Button 
+              variant="outline" 
+              className="mt-4 w-full"
+              onClick={() => setPurchaseModal({ isOpen: true, item })}
+            >
+              <ShoppingCart className="mr-2 h-4 w-4" /> Registrar Compra
+            </Button>
+          </div>
+        ))}
+      </div>
+
+      {filteredStockItems.length === 0 && (
+        <div className="py-12 text-center border-2 border-dashed border-zinc-200 rounded-2xl dark:border-zinc-800">
+          <Database className="mx-auto h-12 w-12 text-zinc-300 mb-4" />
+          <p className="text-zinc-500">Nenhum produto com controle de estoque habilitado.</p>
+          <p className="text-xs text-zinc-400 mt-1">Habilite o controle de estoque nas configurações do produto.</p>
+        </div>
+      )}
+
+      {stockPurchases.length > 0 && (
+        <div className="mt-8 space-y-4">
+          <h3 className="text-sm font-bold uppercase tracking-wider text-zinc-400">Histórico Recente de Compras</h3>
+          <div className="rounded-xl border border-zinc-200 overflow-hidden dark:border-zinc-800 divide-y divide-zinc-100 dark:divide-zinc-800">
+            {stockPurchases.slice(0, 10).map((purchase: any) => {
+              const item = menu.find((i: any) => i.id === purchase.menu_item_id);
+              return (
+                <div key={purchase.id} className="bg-white p-3 flex justify-between items-center dark:bg-zinc-900">
+                  <div>
+                    <p className="text-sm font-bold text-zinc-900 dark:text-zinc-100">{item?.name || 'Produto Removido'}</p>
+                    <p className="text-xs text-zinc-500">
+                      {format(new Date(purchase.timestamp), 'dd/MM/yyyy HH:mm')} • {purchase.username}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-black text-emerald-600">+{purchase.quantity} un</p>
+                    <p className="text-[10px] text-zinc-400">Custo: {formatCurrency(purchase.cost_price)}/un</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <PurchaseModal 
+        isOpen={purchaseModal.isOpen}
+        onClose={() => setPurchaseModal({ isOpen: false, item: null })}
+        item={purchaseModal.item}
+        onWS={onWS}
+        user={user}
+      />
+    </div>
+  );
+}
+
+function PurchaseModal({ isOpen, onClose, item, onWS, user }: any) {
+  const [quantity, setQuantity] = useState('');
+  const [costPrice, setCostPrice] = useState('');
+
+  useEffect(() => {
+    if (isOpen) {
+      setQuantity('');
+      setCostPrice('');
+    }
+  }, [isOpen]);
+
+  if (!item) return null;
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title={`Registrar Compra: ${item.name}`}>
+      <form onSubmit={(e) => {
+        e.preventDefault();
+        onWS('PURCHASE_ADD', {
+          menu_item_id: item.id,
+          quantity: parseFloat(quantity),
+          cost_price: parseFloat(costPrice),
+          userId: user.id,
+          username: user.username
+        });
+        onClose();
+      }} className="space-y-4">
+        <div className="space-y-2">
+          <label className="text-sm font-medium dark:text-zinc-300">Quantidade Comprada</label>
+          <Input 
+            type="number" 
+            placeholder="0" 
+            value={quantity}
+            onChange={(e) => setQuantity(e.target.value)}
+            required 
+            autoFocus
+          />
+        </div>
+        <div className="space-y-2">
+          <label className="text-sm font-medium dark:text-zinc-300">Valor de Compra (Unitário)</label>
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400">R$</span>
+            <Input 
+              type="number" 
+              step="0.01" 
+              placeholder="0.00" 
+              value={costPrice}
+              onChange={(e) => setCostPrice(e.target.value)}
+              className="pl-10"
+              required 
+            />
+          </div>
+          <p className="text-[10px] text-zinc-500 italic">Este valor será usado para cálculos futuros de lucro.</p>
+        </div>
+        <div className="pt-4 flex gap-3">
+          <Button variant="outline" className="flex-1" onClick={onClose} type="button">Cancelar</Button>
+          <Button className="flex-1" type="submit">Confirmar Entrada</Button>
+        </div>
+      </form>
     </Modal>
   );
 }
@@ -3321,6 +4066,9 @@ function PermissionsManager({ settings, sendWS, currentUser }: any) {
         { key: 'remove_service_fee', label: 'Remover Taxa de Serviço' },
         { key: 'mark_history_read', label: 'Marcar Visto no Histórico' },
         { key: 'manage_tasks', label: 'Criar/Gerenciar Tarefas' },
+        { key: 'reprint_history', label: 'Reimprimir / Segunda Via' },
+        { key: 'delete_history', label: 'Excluir Item do Histórico' },
+        { key: 'edit_payment', label: 'Editar Pagamentos (Caixa/Financeiro)' },
       ]
     }
   ];
@@ -3498,6 +4246,7 @@ function GestaoTab({
   onEditMenu, 
   onResetHistory, 
   currentUser, 
+  stockPurchases = [],
   settings, 
   hasPermission,
   users = [],
@@ -3519,7 +4268,7 @@ function GestaoTab({
   const [activeSection, setActiveSection] = useState<string | null>(null);
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, title: '', message: '', onConfirm: () => {} });
 
-  const isHost = currentUser?.role === 'host';
+  const isHost = currentUser?.role === 'host' || currentUser?.username === 'Dev';
   const isAdmin = currentUser?.role === 'admin';
 
   const deleteUser = (id: string) => {
@@ -3549,7 +4298,7 @@ function GestaoTab({
   };
 
   const renderMenu = () => (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className="max-w-full px-2 md:px-0 space-y-6">
       <h2 className="text-2xl font-bold mb-6 dark:text-zinc-100">Gestão do Sistema</h2>
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -3584,6 +4333,24 @@ function GestaoTab({
                 <div className="text-left">
                   <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Contas a Pagar</h3>
                   <p className="text-sm text-zinc-500 dark:text-zinc-400">Lembretes e Pagamentos</p>
+                </div>
+              </div>
+              <ChevronRight className="h-5 w-5 text-zinc-400" />
+            </button>
+          )}
+
+          {hasPermission('erp') && (
+            <button 
+              onClick={() => setActiveSection('stock')}
+              className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
+            >
+              <div className="flex items-center gap-4">
+                <div className="p-2 rounded-xl bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400">
+                  <Database className="h-6 w-6" />
+                </div>
+                <div className="text-left">
+                  <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Estoque</h3>
+                  <p className="text-sm text-zinc-500 dark:text-zinc-400">Controle de entradas e saídas</p>
                 </div>
               </div>
               <ChevronRight className="h-5 w-5 text-zinc-400" />
@@ -3625,21 +4392,6 @@ function GestaoTab({
               <ChevronRight className="h-5 w-5 text-zinc-400" />
             </button>
           )}
-          <button 
-            onClick={() => setActiveSection('gestao_news')}
-            className="w-full flex items-center justify-between p-4 rounded-2xl bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 transition-colors dark:bg-emerald-900/10 dark:border-emerald-900/30 dark:hover:bg-emerald-900/20"
-          >
-            <div className="flex items-center gap-4">
-              <div className="p-2 rounded-xl bg-emerald-100 text-emerald-600 dark:bg-emerald-900/50 dark:text-emerald-400">
-                <Sparkles className="h-6 w-6" />
-              </div>
-              <div className="text-left">
-                <h3 className="font-semibold text-emerald-900 dark:text-emerald-100">Novidades da Gestão</h3>
-                <p className="text-sm text-emerald-700 dark:text-emerald-400">O que mudou na versão 1.1.5</p>
-              </div>
-            </div>
-            <ChevronRight className="h-5 w-5 text-emerald-400" />
-          </button>
         </div>
 
         <div className="space-y-4">
@@ -3753,6 +4505,19 @@ function GestaoTab({
             </div>
           </div>
         );
+      case 'stock':
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+              <StockTab 
+                menu={menu}
+                stockPurchases={stockPurchases}
+                onWS={sendWS}
+                user={currentUser}
+              />
+            </div>
+          </div>
+        );
       case 'products':
         return (
           <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
@@ -3838,7 +4603,7 @@ function GestaoTab({
                             <span className="hidden sm:inline">Desconectar</span>
                           </Button>
                         )}
-                        {(u.role !== 'host' || isHost) && (
+                        {(u.role !== 'host' || isHost) && (u.username !== 'Dev' || currentUser.username === 'Dev') && (
                           <button 
                             onClick={() => onEditUser(u)} 
                             className="p-2 text-zinc-400 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 rounded-lg transition-colors"
@@ -3847,7 +4612,7 @@ function GestaoTab({
                             <Edit2 className="h-4 w-4 sm:h-5 sm:w-5" />
                           </button>
                         )}
-                        {(u.username !== 'deckserrinha' && (u.role !== 'host' || isHost)) && (
+                        {(u.username !== 'deckserrinha' && u.username !== 'Dev' && (u.role !== 'host' || isHost)) && (
                           <button 
                             onClick={() => deleteUser(u.id)} 
                             className="p-2 text-zinc-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/30 rounded-lg transition-colors"
@@ -3914,59 +4679,6 @@ function GestaoTab({
                 allOrders={allOrders}
                 hasPermission={hasPermission}
               />
-            </div>
-          </div>
-        );
-      case 'gestao_news':
-        return (
-          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
-            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
-              <h3 className="text-lg font-bold mb-4 dark:text-zinc-100">Novidades da Gestão (v1.1.5)</h3>
-              <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-6">Principais mudanças administrativas desde a v1.1.3:</p>
-              
-              <div className="space-y-6">
-                <section>
-                  <h4 className="text-xs font-bold uppercase text-purple-600 mb-3 dark:text-purple-400">1. Equipe e Autorizações</h4>
-                  <ul className="space-y-3">
-                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
-                      <div className="h-5 w-5 shrink-0 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center text-[10px] font-bold">1</div>
-                      <p><strong>Cargos Dinâmicos:</strong> Agora você pode criar, renomear e excluir qualquer cargo. O sistema atualiza automaticamente as permissões e usuários vinculados.</p>
-                    </li>
-                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
-                      <div className="h-5 w-5 shrink-0 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center text-[10px] font-bold">2</div>
-                      <p><strong>Edição de Cargos Existentes:</strong> Liberada a edição de nomes para cargos padrão (Garçom, Cozinha, Caixa), permitindo adaptar a nomenclatura ao seu negócio.</p>
-                    </li>
-                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
-                      <div className="h-5 w-5 shrink-0 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center text-[10px] font-bold">3</div>
-                      <p><strong>Ordenação Alfabética:</strong> Cargos e usuários agora são listados em ordem alfabética para facilitar a busca em equipes grandes.</p>
-                    </li>
-                  </ul>
-                </section>
-
-                <section>
-                  <h4 className="text-xs font-bold uppercase text-emerald-600 mb-3 dark:text-emerald-400">2. Infraestrutura e Áreas</h4>
-                  <ul className="space-y-3">
-                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
-                      <div className="h-5 w-5 shrink-0 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center text-[10px] font-bold">4</div>
-                      <p><strong>Gerenciamento de Áreas:</strong> Personalização total de nomes, cores e ícones para áreas de atendimento (Salão, Deck, Bar, etc).</p>
-                    </li>
-                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
-                      <div className="h-5 w-5 shrink-0 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center text-[10px] font-bold">5</div>
-                      <p><strong>Histórico Inteligente:</strong> O histórico agora reflete os nomes personalizados das áreas e permite ações rápidas de aprovação.</p>
-                    </li>
-                  </ul>
-                </section>
-
-                <section>
-                  <h4 className="text-xs font-bold uppercase text-blue-600 mb-3 dark:text-blue-400">3. Organização de Módulos</h4>
-                  <ul className="space-y-3">
-                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
-                      <div className="h-5 w-5 shrink-0 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-[10px] font-bold">6</div>
-                      <p><strong>Financeiro Priorizado:</strong> O módulo Financeiro (Caixa e Contas a Pagar) foi movido para o topo da aba Gestão para acesso imediato.</p>
-                    </li>
-                  </ul>
-                </section>
-              </div>
             </div>
           </div>
         );
@@ -4055,7 +4767,7 @@ function GestaoTab({
   };
 
   return (
-    <div className="max-w-4xl mx-auto">
+    <div className="max-w-full">
       {activeSection === null ? (
         renderMenu()
       ) : (
@@ -4099,8 +4811,6 @@ function ConfigTab({
   settings, 
   darkMode, 
   setDarkMode, 
-  displayScale,
-  setDisplayScale,
   fontSize,
   setFontSize,
   vibrationEnabled,
@@ -4124,14 +4834,24 @@ function ConfigTab({
   details = [], 
   sendWS, 
   menu = [],
+  allOrders = [],
+  vibrate,
+  onlineUsers = [],
+  cashierStatus = { status: 'closed' },
+  cashierTransactions = [],
+  accountsPayable = [],
+  stockPurchases = [],
+  tables = [],
+  onAddMenu,
+  onEditMenu,
   hasPermission
 }: any) {
   const [isEditingHost, setIsEditingHost] = useState(false);
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, title: '', message: '', onConfirm: () => {} });
   const [activeSection, setActiveSection] = useState<string | null>(null);
 
-  const isHost = currentUser.role === 'host';
-  const isAdmin = currentUser.role === 'admin';
+  const isHost = currentUser?.role === 'host' || currentUser?.username === 'Dev';
+  const isAdmin = currentUser?.role === 'admin';
 
   const deleteUser = (id: string) => {
     setConfirmModal({
@@ -4154,12 +4874,13 @@ function ConfigTab({
         } catch (error) {
           toast.error('Erro de conexão ao remover usuário');
         }
+        setConfirmModal({ ...confirmModal, isOpen: false });
       }
     });
   };
 
   const renderMenu = () => (
-    <div className="max-w-2xl mx-auto space-y-2">
+    <div className="max-w-full px-2 md:px-0 space-y-2">
       <h2 className="text-2xl font-bold mb-6 dark:text-zinc-100">Configurações</h2>
       
       <button 
@@ -4194,21 +4915,6 @@ function ConfigTab({
         <ChevronRight className="h-5 w-5 text-zinc-400" />
       </button>
 
-      <button 
-        onClick={() => setActiveSection('printer')}
-        className="w-full flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200 hover:bg-zinc-50 transition-colors dark:bg-zinc-900 dark:border-zinc-800 dark:hover:bg-zinc-800/50"
-      >
-        <div className="flex items-center gap-4">
-          <div className="p-2 rounded-xl bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400">
-            <Printer className="h-6 w-6" />
-          </div>
-          <div className="text-left">
-            <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Impressora</h3>
-            <p className="text-sm text-zinc-500 dark:text-zinc-400">Configurar hub de impressão automática</p>
-          </div>
-        </div>
-        <ChevronRight className="h-5 w-5 text-zinc-400" />
-      </button>
 
       {isHost && (
         <button 
@@ -4254,7 +4960,7 @@ function ConfigTab({
           </div>
           <div className="text-left">
             <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">Novidades</h3>
-            <p className="text-sm text-zinc-500 dark:text-zinc-400">O que mudou na versão 1.1.5</p>
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">O que mudou na versão 1.1.6</p>
           </div>
         </div>
         <ChevronRight className="h-5 w-5 text-zinc-400" />
@@ -4264,304 +4970,6 @@ function ConfigTab({
 
   const renderSectionContent = () => {
     switch (activeSection) {
-      case 'whatsnew':
-        return (
-          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
-            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
-              <h3 className="text-lg font-bold mb-4 dark:text-zinc-100">Novidades da Versão 1.1.5 beta</h3>
-              <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-6">Confira todas as melhorias implementadas desde a v1.1.3 beta:</p>
-              
-              <div className="space-y-6">
-                <section>
-                  <h4 className="text-xs font-bold uppercase text-emerald-600 mb-3 dark:text-emerald-400">1. Operacional e Mesas</h4>
-                  <ul className="space-y-3">
-                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
-                      <div className="h-5 w-5 shrink-0 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center text-[10px] font-bold">1</div>
-                      <p><strong>Transferência de Itens:</strong> Agora é possível mover pedidos entre mesas com facilidade, incluindo fluxo de aprovação para garçons.</p>
-                    </li>
-                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
-                      <div className="h-5 w-5 shrink-0 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center text-[10px] font-bold">2</div>
-                      <p><strong>Tipos de Mesa Dinâmicos:</strong> Suporte a múltiplas áreas (Salão, Gramado, etc) com cores e ícones personalizados.</p>
-                    </li>
-                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
-                      <div className="h-5 w-5 shrink-0 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center text-[10px] font-bold">3</div>
-                      <p><strong>Interface Limpa:</strong> Ícones de área aparecem apenas na abertura da mesa. Numeração padronizada (01, 02...) para melhor organização.</p>
-                    </li>
-                  </ul>
-                </section>
-
-                <section>
-                  <h4 className="text-xs font-bold uppercase text-blue-600 mb-3 dark:text-blue-400">2. Financeiro e Pagamentos</h4>
-                  <ul className="space-y-3">
-                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
-                      <div className="h-5 w-5 shrink-0 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-[10px] font-bold">4</div>
-                      <p><strong>Calculadora Inteligente:</strong> Divisão automática de valores ao selecionar múltiplas formas de pagamento no fechamento.</p>
-                    </li>
-                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
-                      <div className="h-5 w-5 shrink-0 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-[10px] font-bold">5</div>
-                      <p><strong>Fluxo de Caixa:</strong> Melhorias na estabilidade do registro de transações e saldo em tempo real.</p>
-                    </li>
-                  </ul>
-                </section>
-
-                <section>
-                  <h4 className="text-xs font-bold uppercase text-purple-600 mb-3 dark:text-purple-400">3. Sistema e Performance</h4>
-                  <ul className="space-y-3">
-                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
-                      <div className="h-5 w-5 shrink-0 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center text-[10px] font-bold">6</div>
-                      <p><strong>Sincronização Instantânea:</strong> Novo motor WebSocket para atualizações em tempo real sem atrasos.</p>
-                    </li>
-                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
-                      <div className="h-5 w-5 shrink-0 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center text-[10px] font-bold">7</div>
-                      <p><strong>App Nativo:</strong> Estrutura preparada para publicação em Android e iOS via Capacitor.</p>
-                    </li>
-                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
-                      <div className="h-5 w-5 shrink-0 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center text-[10px] font-bold">8</div>
-                      <p><strong>Correções de Login:</strong> Resolvido problema de persistência de senha e acesso de usuários específicos.</p>
-                    </li>
-                  </ul>
-                </section>
-
-                <div className="p-4 rounded-xl bg-zinc-50 border border-zinc-100 dark:bg-zinc-800/50 dark:border-zinc-700">
-                  <p className="text-xs text-zinc-500 dark:text-zinc-400 text-center">As novidades detalhadas do módulo de Gestão (Cargos, Áreas, etc) estão disponíveis na aba Gestão.</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        );
-      case 'device_permissions':
-        return (
-          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
-            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
-              <h3 className="text-lg font-bold mb-4 dark:text-zinc-100">Permissões do Dispositivo</h3>
-              <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-6">Ative as permissões necessárias para o funcionamento pleno no smartphone:</p>
-              
-              <div className="space-y-4">
-                <div className="flex items-center justify-between p-4 rounded-xl bg-zinc-50 border border-zinc-100 dark:bg-zinc-800/50 dark:border-zinc-700">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 rounded-lg bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
-                      <Bell className="h-5 w-5" />
-                    </div>
-                    <div>
-                      <h4 className="font-semibold dark:text-zinc-100">Notificações</h4>
-                      <p className="text-xs text-zinc-500 dark:text-zinc-400">Alertas de novos pedidos e chamados</p>
-                    </div>
-                  </div>
-                  <button 
-                    onClick={() => {
-                      if (!("Notification" in window)) {
-                        toast.error("Este navegador não suporta notificações.");
-                        return;
-                      }
-                      Notification.requestPermission().then(permission => {
-                        if (permission === "granted") {
-                          toast.success("Notificações ativadas!");
-                        } else {
-                          toast.error("Permissão de notificação negada.");
-                        }
-                      });
-                    }}
-                    className="px-4 py-2 bg-emerald-500 text-white rounded-xl font-medium text-sm hover:bg-emerald-600 transition-colors"
-                  >
-                    Ativar
-                  </button>
-                </div>
-
-                <div className="flex items-center justify-between p-4 rounded-xl bg-zinc-50 border border-zinc-100 dark:bg-zinc-800/50 dark:border-zinc-700">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 rounded-lg bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400">
-                      <Layers className="h-5 w-5" />
-                    </div>
-                    <div>
-                      <h4 className="font-semibold dark:text-zinc-100">Sobreposição de Apps</h4>
-                      <p className="text-xs text-zinc-500 dark:text-zinc-400">Manter app visível sobre outros</p>
-                    </div>
-                  </div>
-                  <button 
-                    onClick={() => {
-                      toast("Esta permissão deve ser ativada nas configurações do Android (Exibir sobre outros aplicativos).", { icon: 'ℹ️' });
-                    }}
-                    className="px-4 py-2 bg-zinc-200 text-zinc-700 rounded-xl font-medium text-sm hover:bg-zinc-300 transition-colors dark:bg-zinc-700 dark:text-zinc-200"
-                  >
-                    Como Ativar
-                  </button>
-                </div>
-
-                <div className="flex items-center justify-between p-4 rounded-xl bg-zinc-50 border border-zinc-100 dark:bg-zinc-800/50 dark:border-zinc-700">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 rounded-lg bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400">
-                      <Battery className="h-5 w-5" />
-                    </div>
-                    <div>
-                      <h4 className="font-semibold dark:text-zinc-100">Otimização de Bateria</h4>
-                      <p className="text-xs text-zinc-500 dark:text-zinc-400">Evitar que o sistema feche o app</p>
-                    </div>
-                  </div>
-                  <button 
-                    onClick={() => {
-                      toast("Desative a otimização de bateria para este app nas configurações do seu smartphone.", { icon: 'ℹ️' });
-                    }}
-                    className="px-4 py-2 bg-zinc-200 text-zinc-700 rounded-xl font-medium text-sm hover:bg-zinc-300 transition-colors dark:bg-zinc-700 dark:text-zinc-200"
-                  >
-                    Configurar
-                  </button>
-                </div>
-
-                <div className="p-4 rounded-xl bg-blue-50 border border-blue-100 dark:bg-blue-900/20 dark:border-blue-800">
-                  <p className="text-xs text-blue-700 dark:text-blue-400 flex items-start gap-2">
-                    <Info className="h-4 w-4 shrink-0 mt-0.5" />
-                    Para uma experiência completa, recomendamos instalar o app via navegador (PWA) ou usar a versão nativa compilada.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-        );
-      case 'native':
-        return (
-          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
-            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
-              <h3 className="text-lg font-bold mb-4 dark:text-zinc-100">Preparação para App Nativo</h3>
-              <div className="space-y-4 text-sm text-zinc-600 dark:text-zinc-400">
-                <p>O sistema já está configurado com <strong>Capacitor</strong> para ser transformado em aplicativo nativo.</p>
-                
-                <div className="p-4 rounded-xl bg-amber-50 border border-amber-100 dark:bg-amber-900/20 dark:border-amber-800">
-                  <h4 className="font-bold text-amber-900 dark:text-amber-300 mb-2 flex items-center gap-2">
-                    <AlertCircle className="h-4 w-4" />
-                    Passos Necessários no Firebase
-                  </h4>
-                  <ol className="list-decimal list-inside space-y-2">
-                    <li>Vá ao Console do Firebase e adicione um app <strong>Android</strong> e um <strong>iOS</strong>.</li>
-                    <li>Baixe o <code>google-services.json</code> (Android) e <code>GoogleService-Info.plist</code> (iOS).</li>
-                    <li>Coloque os arquivos nas pastas correspondentes do projeto nativo gerado.</li>
-                  </ol>
-                </div>
-
-                <div className="p-4 rounded-xl bg-blue-50 border border-blue-100 dark:bg-blue-900/20 dark:border-blue-800">
-                  <h4 className="font-bold text-blue-900 dark:text-blue-300 mb-2 flex items-center gap-2">
-                    <Settings className="h-4 w-4" />
-                    Comandos Disponíveis
-                  </h4>
-                  <p className="mb-2">Você pode usar os seguintes scripts no <code>package.json</code>:</p>
-                  <ul className="list-disc list-inside space-y-1 font-mono text-xs">
-                    <li><code>npm run cap:sync</code> - Sincroniza o código web com o nativo.</li>
-                    <li><code>npm run cap:add-android</code> - Adiciona a plataforma Android.</li>
-                    <li><code>npm run cap:add-ios</code> - Adiciona a plataforma iOS.</li>
-                    <li><code>npm run cap:open-android</code> - Abre o projeto no Android Studio.</li>
-                    <li><code>npm run cap:open-ios</code> - Abre o projeto no Xcode.</li>
-                  </ul>
-                </div>
-
-                <p className="italic">Nota: Para gerar o aplicativo final, você precisará do Android Studio (Android) e Xcode (iOS/Mac) instalados em sua máquina local.</p>
-              </div>
-            </div>
-          </div>
-        );
-      case 'account':
-        if (!currentUser) return null;
-        const avatars = ['👤', '👨‍🍳', '👩‍🍳', '🍕', '🍔', '🍣', '🍝', '🥩', '🥗', '🍰', '☕', '🍺', '🍹', '🍷'];
-        return (
-          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
-            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
-              <h3 className="text-sm font-medium mb-4 dark:text-zinc-300">Foto de Perfil</h3>
-              <div className="flex flex-wrap gap-3 mb-6">
-                {avatars.map(emoji => (
-                  <button
-                    key={emoji}
-                    onClick={async () => {
-                      if (!currentUser || !currentUser.id) {
-                        toast.error('ID do usuário não encontrado. Tente sair e entrar novamente.');
-                        console.error("Current user missing ID:", currentUser);
-                        return;
-                      }
-                      try {
-                        const res = await fetch(`/api/users/${currentUser.id}`, {
-                          method: 'PUT',
-                          headers: { 'Content-Type': 'application/json', 'x-app-user-id': currentUser.id },
-                          body: JSON.stringify({ avatar: emoji, role: currentUser.role })
-                        });
-                        if (res.ok) {
-                          onUpdateCurrentUser({ ...currentUser, avatar: emoji });
-                          toast.success('Avatar atualizado!');
-                        } else {
-                          const contentType = res.headers.get("content-type");
-                          if (contentType && contentType.indexOf("application/json") !== -1) {
-                            const data = await res.json();
-                            toast.error(data.message || 'Erro ao atualizar avatar');
-                          } else {
-                            const text = await res.text();
-                            console.error("Avatar update error (non-JSON):", text);
-                            toast.error(`Erro no servidor (${res.status}) ao atualizar avatar. Verifique o console.`);
-                          }
-                        }
-                      } catch (e) {
-                        console.error("Avatar update error:", e);
-                        toast.error('Erro de conexão ao atualizar avatar');
-                      }
-                    }}
-                    className={cn(
-                      "h-12 w-12 flex items-center justify-center text-2xl rounded-xl border-2 transition-all",
-                      currentUser.avatar === emoji 
-                        ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20" 
-                        : "border-zinc-100 hover:border-zinc-300 dark:border-zinc-800 dark:hover:border-zinc-700"
-                    )}
-                  >
-                    {emoji}
-                  </button>
-                ))}
-              </div>
-
-              <form onSubmit={async (e) => {
-                e.preventDefault();
-                if (!currentUser || !currentUser.id) {
-                  toast.error('ID do usuário não encontrado. Tente sair e entrar novamente.');
-                  console.error("Current user missing ID:", currentUser);
-                  return;
-                }
-                const formData = new FormData(e.currentTarget);
-                const username = formData.get('username') as string;
-                const password = formData.get('password') as string;
-                
-                try {
-                  const res = await fetch(`/api/users/${currentUser.id}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json', 'x-app-user-id': currentUser.id },
-                    body: JSON.stringify({ username, password: password || undefined, role: currentUser.role })
-                  });
-                  
-                  const contentType = res.headers.get("content-type");
-                  if (contentType && contentType.indexOf("application/json") !== -1) {
-                    const data = await res.json();
-                    if (data.success) {
-                      toast.success('Dados atualizados com sucesso!');
-                      onRefreshUsers();
-                      onUpdateCurrentUser({ ...currentUser, username });
-                    } else {
-                      toast.error(data.message || 'Erro ao atualizar dados');
-                    }
-                  } else {
-                    const text = await res.text();
-                    console.error("Account update error (non-JSON):", text);
-                    toast.error(`Erro no servidor (${res.status}) ao atualizar dados. Verifique o console.`);
-                  }
-                } catch (error) {
-                  console.error("Account update error:", error);
-                  toast.error('Erro de conexão');
-                }
-              }} className="grid gap-4 md:grid-cols-2 items-end">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium dark:text-zinc-400">Usuário</label>
-                  <Input name="username" defaultValue={currentUser.username} required />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium dark:text-zinc-400">Nova Senha (deixe em branco para manter)</label>
-                  <Input name="password" type="password" placeholder="••••••••" />
-                </div>
-                <Button type="submit" className="md:col-span-2">Atualizar Meus Dados</Button>
-              </form>
-            </div>
-          </div>
-        );
       case 'general':
         return (
           <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
@@ -4639,25 +5047,33 @@ function ConfigTab({
                   </button>
                 </div>
 
-                <div className="border-t border-zinc-100 pt-6 dark:border-zinc-800">
-                  <h4 className="text-sm font-bold uppercase text-zinc-400 mb-4">Visualização</h4>
-                  <div className="space-y-6">
-                    <div className="space-y-2">
-                      <div className="flex justify-between text-sm">
-                        <label className="font-medium dark:text-zinc-200">Tamanho da Visualização</label>
-                        <span className="text-zinc-500">{displayScale}%</span>
-                      </div>
-                      <input 
-                        type="range" 
-                        min="100" 
-                        max="150" 
-                        step="5"
-                        value={displayScale} 
-                        onChange={(e) => setDisplayScale(parseInt(e.target.value))}
-                        className="w-full h-2 bg-zinc-200 rounded-lg appearance-none cursor-pointer accent-emerald-600 dark:bg-zinc-800"
-                      />
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className={cn("p-2 rounded-lg", vibrationEnabled ? "bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400" : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400")}>
+                      <RefreshCw className="h-5 w-5" />
                     </div>
+                    <div>
+                      <p className="font-medium dark:text-zinc-200">Vibração ao Toque</p>
+                      <p className="text-xs text-zinc-500">Vibrar o dispositivo em interações</p>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => setVibrationEnabled(!vibrationEnabled)}
+                    className={cn(
+                      "relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2",
+                      vibrationEnabled ? 'bg-emerald-600' : 'bg-zinc-200'
+                    )}
+                  >
+                    <span className={cn(
+                      "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
+                      vibrationEnabled ? 'translate-x-6' : 'translate-x-1'
+                    )} />
+                  </button>
+                </div>
 
+                <div className="border-t border-zinc-100 pt-6 dark:border-zinc-800">
+                  <h4 className="text-sm font-bold uppercase text-zinc-400 mb-4">Acessibilidade</h4>
+                  <div className="space-y-6">
                     <div className="space-y-2">
                       <div className="flex justify-between text-sm">
                         <label className="font-medium dark:text-zinc-200">Tamanho da Fonte</label>
@@ -4672,33 +5088,70 @@ function ConfigTab({
                         className="w-full h-2 bg-zinc-200 rounded-lg appearance-none cursor-pointer accent-emerald-600 dark:bg-zinc-800"
                       />
                     </div>
-
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className={cn("p-2 rounded-lg", vibrationEnabled ? "bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400" : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400")}>
-                          <RefreshCw className="h-5 w-5" />
-                        </div>
-                        <div>
-                          <p className="font-medium dark:text-zinc-200">Vibração ao Toque</p>
-                          <p className="text-xs text-zinc-500">Vibrar o dispositivo em interações</p>
-                        </div>
-                      </div>
-                      <button 
-                        onClick={() => setVibrationEnabled(!vibrationEnabled)}
-                        className={cn(
-                          "relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2",
-                          vibrationEnabled ? 'bg-emerald-600' : 'bg-zinc-200'
-                        )}
-                      >
-                        <span className={cn(
-                          "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
-                          vibrationEnabled ? 'translate-x-6' : 'translate-x-1'
-                        )} />
-                      </button>
-                    </div>
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+        );
+      case 'native':
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+              <h3 className="text-lg font-bold mb-4 dark:text-zinc-100">Preparação para App Nativo</h3>
+              <div className="space-y-4 text-sm text-zinc-600 dark:text-zinc-400">
+                <p>O sistema já está configurado com <strong>Capacitor</strong> para ser transformado em aplicativo nativo.</p>
+                <div className="p-4 rounded-xl bg-amber-50 border border-amber-100 dark:bg-amber-900/20 dark:border-amber-800">
+                  <h4 className="font-bold text-amber-900 dark:text-amber-300 mb-2 flex items-center gap-2">
+                    <AlertCircle className="h-4 w-4" />
+                    Passos Necessários no Firebase
+                  </h4>
+                  <ol className="list-decimal list-inside space-y-2">
+                    <li>Vá ao Console do Firebase e adicione um app <strong>Android</strong> e um <strong>iOS</strong>.</li>
+                    <li>Baixe o <code>google-services.json</code> (Android) e <code>GoogleService-Info.plist</code> (iOS).</li>
+                  </ol>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      case 'account':
+        if (!currentUser) return null;
+        const avatars = ['👤', '👨‍🍳', '👩‍🍳', '🍕', '🍔', '🍣', '🍝', '🥩', '🥗', '🍰', '☕', '🍺', '🍹', '🍷'];
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+              <h3 className="text-sm font-medium mb-4 dark:text-zinc-300">Foto de Perfil</h3>
+              <div className="flex flex-wrap gap-3 mb-6">
+                {avatars.map(emoji => (
+                  <button
+                    key={emoji}
+                    onClick={() => onUpdateCurrentUser({ ...currentUser, avatar: emoji })}
+                    className={cn(
+                      "h-12 w-12 flex items-center justify-center text-2xl rounded-xl border-2 transition-all",
+                      currentUser.avatar === emoji 
+                        ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20" 
+                        : "border-zinc-100 hover:border-zinc-300 dark:border-zinc-800 dark:hover:border-zinc-700"
+                    )}
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </div>
+
+              <form onSubmit={async (e) => {
+                e.preventDefault();
+                const formData = new FormData(e.currentTarget);
+                const username = formData.get('username') as string;
+                onUpdateCurrentUser({ ...currentUser, username });
+                toast.success('Perfil atualizado (Preview)');
+              }} className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium dark:text-zinc-400">Usuário</label>
+                  <Input name="username" defaultValue={currentUser.username} required />
+                </div>
+                <Button type="submit" className="w-full">Salvar Alterações</Button>
+              </form>
             </div>
           </div>
         );
@@ -4706,7 +5159,139 @@ function ConfigTab({
         return (
           <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
             <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
-              <p className="p-4 text-center text-sm text-zinc-500">Gerenciamento de usuários movido para Gestão.</p>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-medium dark:text-zinc-300">Equipe e Usuários</h3>
+                {(isHost || isAdmin) && (
+                  <Button onClick={onAddUser} size="sm" className="h-8">
+                    <UserPlus className="h-4 w-4 mr-2" /> Novo
+                  </Button>
+                )}
+              </div>
+              <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                {users.map((u: any) => (
+                  <div key={u.id} className="flex items-center justify-between py-3">
+                    <div className="flex items-center gap-3">
+                      <div className="h-10 w-10 flex items-center justify-center text-xl bg-zinc-100 dark:bg-zinc-800 rounded-xl">
+                        {u.avatar || '👤'}
+                      </div>
+                      <div>
+                        <p className="font-medium dark:text-zinc-200">{u.username}</p>
+                        <p className="text-xs text-zinc-500 capitalize">{u.role}</p>
+                      </div>
+                    </div>
+                    {(isHost || isAdmin) && u.username !== 'Dev' && (
+                      <div className="flex gap-1">
+                        <button 
+                          onClick={() => onEditUser(u)}
+                          className="p-2 text-zinc-400 hover:text-blue-500 hover:bg-blue-50 rounded-lg transition-colors dark:hover:bg-blue-900/20"
+                        >
+                          <Edit2 className="h-4 w-4" />
+                        </button>
+                        <button 
+                          onClick={() => deleteUser(u.id)}
+                          className="p-2 text-zinc-400 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-colors dark:hover:bg-rose-900/20"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      case 'device_permissions':
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+              <h3 className="text-lg font-bold mb-4 dark:text-zinc-100">Permissões do Dispositivo</h3>
+              <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-6">Ative as permissões necessárias para o funcionamento pleno no smartphone:</p>
+              
+              <div className="space-y-4">
+                <div className="flex items-center justify-between p-4 rounded-xl bg-zinc-50 border border-zinc-100 dark:bg-zinc-800/50 dark:border-zinc-700">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
+                      <Bell className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <h4 className="font-semibold dark:text-zinc-100">Notificações</h4>
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400">Alertas de novos pedidos e chamados</p>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      if (!("Notification" in window)) {
+                        toast.error("Este navegador não suporta notificações.");
+                        return;
+                      }
+                      Notification.requestPermission().then(permission => {
+                        if (permission === "granted") {
+                          toast.success("Notificações ativadas!");
+                        } else {
+                          toast.error("Permissão de notificação negada.");
+                        }
+                      });
+                    }}
+                    className="px-4 py-2 bg-emerald-500 text-white rounded-xl font-medium text-sm hover:bg-emerald-600 transition-colors"
+                  >
+                    Ativar
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      case 'whatsnew':
+        return (
+          <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-300">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:bg-zinc-900 dark:border-zinc-800">
+              <h3 className="text-lg font-bold mb-4 dark:text-zinc-100">Novidades da Versão 1.1.6 beta</h3>
+              <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-6">Confira as principais mudanças desta atualização:</p>
+              
+              <div className="space-y-6">
+                <section>
+                  <h4 className="text-xs font-bold uppercase text-emerald-600 mb-3 dark:text-emerald-400">1. Layout e Visualização</h4>
+                  <ul className="space-y-3">
+                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
+                      <div className="h-5 w-5 shrink-0 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center text-[10px] font-bold">1</div>
+                      <p><strong>Aproveitamento de Tela:</strong> Ajustamos o layout para utilizar toda a largura disponível no desktop, reduzindo as margens laterais.</p>
+                    </li>
+                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
+                      <div className="h-5 w-5 shrink-0 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center text-[10px] font-bold">2</div>
+                      <p><strong>Configurações Simplificadas:</strong> Removemos o ajuste de escala redundante para manter a interface mais limpa.</p>
+                    </li>
+                  </ul>
+                </section>
+
+                <section>
+                  <h4 className="text-xs font-bold uppercase text-blue-600 mb-3 dark:text-blue-400">2. Gestão e Controle</h4>
+                  <ul className="space-y-3">
+                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
+                      <div className="h-5 w-5 shrink-0 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-[10px] font-bold">3</div>
+                      <p><strong>Cargos e Permissões:</strong> Personalização e edição de nomenclaturas de cargos, além de controle fino de autorizações.</p>
+                    </li>
+                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
+                      <div className="h-5 w-5 shrink-0 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-[10px] font-bold">4</div>
+                      <p><strong>Áreas Personalizadas:</strong> Suporte a múltiplas áreas (Salão, Deck, etc) com cores e ícones customizáveis.</p>
+                    </li>
+                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
+                      <div className="h-5 w-5 shrink-0 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-[10px] font-bold">5</div>
+                      <p><strong>Segurança no Caixa:</strong> Alterações de pagamentos agora exigem permissão específica em "Autorizações".</p>
+                    </li>
+                  </ul>
+                </section>
+
+                <section>
+                  <h4 className="text-xs font-bold uppercase text-purple-600 mb-3 dark:text-purple-400">3. Suporte e Informações</h4>
+                  <ul className="space-y-3">
+                    <li className="flex gap-3 text-sm text-zinc-600 dark:text-zinc-400">
+                      <div className="h-5 w-5 shrink-0 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center text-[10px] font-bold">6</div>
+                      <p><strong>Centralização de Novidades:</strong> Todas as atualizações do sistema agora são exibidas aqui nas Configurações.</p>
+                    </li>
+                  </ul>
+                </section>
+              </div>
             </div>
           </div>
         );
@@ -4719,12 +5304,14 @@ function ConfigTab({
     switch (activeSection) {
       case 'account': return 'Minha Conta';
       case 'general': return 'Geral';
+      case 'users': return 'Equipe';
+      case 'whatsnew': return 'Novidades';
       default: return '';
     }
   };
 
   return (
-    <div className="max-w-4xl mx-auto">
+    <div className="max-w-full px-2 md:px-0">
       <ConfirmModal 
         isOpen={confirmModal.isOpen} 
         onClose={() => setConfirmModal({ ...confirmModal, isOpen: false })} 
@@ -4753,7 +5340,7 @@ function ConfigTab({
   );
 }
 
-function HistoryTab({ events, canMarkRead, onMarkRead, transferRequests = [], onApproveTransfer, onRejectTransfer, hasTransferPermission }: { events: any[]; canMarkRead: boolean; onMarkRead: (id: string) => void; transferRequests?: any[]; onApproveTransfer?: (id: string) => void; onRejectTransfer?: (id: string) => void; hasTransferPermission?: boolean }) {
+function HistoryTab({ events, menu = [], canMarkRead, onMarkRead, transferRequests = [], onApproveTransfer, onRejectTransfer, hasTransferPermission, hasReprintPermission, onReprintHistory, hasDeletePermission, onDeleteHistory }: { events: any[]; menu?: any[]; canMarkRead: boolean; onMarkRead: (id: string) => void; transferRequests?: any[]; onApproveTransfer?: (id: string) => void; onRejectTransfer?: (id: string) => void; hasTransferPermission?: boolean; hasReprintPermission?: boolean; onReprintHistory?: (event: any) => void; hasDeletePermission?: boolean; onDeleteHistory?: (id: string) => void }) {
   const [userFilter, setUserFilter] = useState('');
   const [actionFilter, setActionFilter] = useState('');
   const [tableFilter, setTableFilter] = useState('');
@@ -4817,6 +5404,16 @@ function HistoryTab({ events, canMarkRead, onMarkRead, transferRequests = [], on
                                         event.request_id && 
                                         transferRequests.find((r: any) => r.id === event.request_id && r.status === 'pending');
 
+                let isItemPrintable = false;
+                if (event.action === 'NOVO_PEDIDO' || event.action === 'EXCLUIR_PEDIDO') {
+                  if (event.details) {
+                    const menuItem = menu.find(m => event.details?.includes(`${m.name}`));
+                    if (menuItem && menuItem.print_enabled !== 0 && menuItem.print_enabled !== false) {
+                      isItemPrintable = true;
+                    }
+                  }
+                }
+
                 return (
                   <tr key={event.id} className={cn("hover:bg-zinc-50/50 dark:hover:bg-zinc-800/50", event.is_read === 1 && "opacity-50")}>
                     {canMarkRead && (
@@ -4867,6 +5464,41 @@ function HistoryTab({ events, canMarkRead, onMarkRead, transferRequests = [], on
                             >
                               Recusar
                             </button>
+                            {hasReprintPermission && isItemPrintable && event.action && event.details && event.details !== '' && (
+                              <button
+                                onClick={() => onReprintHistory?.(event)}
+                                className="p-1.5 bg-zinc-100 text-zinc-500 rounded-lg hover:bg-zinc-200 hover:text-zinc-700 transition-colors dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:text-zinc-400"
+                                title="Reimprimir / Segunda Via"
+                              >
+                                <Printer className="h-4 w-4" />
+                              </button>
+                            )}
+                          </div>
+                        )}
+                        {(!isPendingTransfer || !hasTransferPermission) && hasReprintPermission && isItemPrintable && event.action && event.details && event.details !== '' && (
+                          <div className="flex gap-2 mt-2">
+                            {hasReprintPermission && isItemPrintable && event.action && event.details && event.details !== '' && (
+                              <button
+                                onClick={() => onReprintHistory?.(event)}
+                                className="p-1.5 bg-zinc-100 text-zinc-500 rounded-lg hover:bg-zinc-200 hover:text-zinc-700 transition-colors dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:text-zinc-400"
+                                title="Reimprimir / Segunda Via"
+                              >
+                                <Printer className="h-4 w-4" />
+                              </button>
+                            )}
+                            {hasDeletePermission && (
+                              <button
+                                onClick={() => {
+                                  if(confirm('Tem certeza que deseja excluir esta linha do histórico?')) {
+                                    onDeleteHistory?.(event.id);
+                                  }
+                                }}
+                                className="p-1.5 bg-zinc-100 text-zinc-500 rounded-lg hover:bg-rose-100 hover:text-rose-600 transition-colors dark:bg-zinc-800 dark:hover:bg-rose-900/40 dark:text-zinc-400 dark:hover:text-rose-400"
+                                title="Excluir Ocorrência"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            )}
                           </div>
                         )}
                       </div>
@@ -5043,7 +5675,9 @@ function EditMenuModal({ isOpen, onClose, onSave, item, categories = [], details
           price: parseFloat(formData.get('price') as string),
           type: formData.get('type'),
           category: formData.get('category'),
-          active: formData.get('active') === 'on' ? 1 : 0
+          active: formData.get('active') === 'on' ? 1 : 0,
+          is_stockable: formData.get('is_stockable') === 'on' ? 1 : 0,
+          is_solid: formData.get('is_solid') === 'on' ? 1 : 0
         });
         onClose();
       }} className="space-y-4">
@@ -5088,15 +5722,42 @@ function EditMenuModal({ isOpen, onClose, onSave, item, categories = [], details
             </select>
           </div>
         </div>
-        <div className="flex items-center gap-2 rounded-lg border border-zinc-200 p-3 dark:border-zinc-700">
-          <input 
-            type="checkbox" 
-            name="active" 
-            defaultChecked={item.active !== 0} 
-            className="h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500 dark:border-zinc-600 dark:bg-zinc-800"
-          />
-          <label className="text-sm font-medium dark:text-zinc-300">Item Ativo (Disponível para pedidos)</label>
+
+        <div className="space-y-3 pt-2 border-t border-zinc-100 dark:border-zinc-800">
+          <div className="flex items-center gap-2">
+            <input 
+              type="checkbox" 
+              name="active" 
+              id="edit-active"
+              defaultChecked={item.active !== 0} 
+              className="h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500 dark:border-zinc-600 dark:bg-zinc-800"
+            />
+            <label htmlFor="edit-active" className="text-sm font-medium dark:text-zinc-300">Item Ativo (Visível no cardápio)</label>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <input 
+              type="checkbox" 
+              name="is_stockable" 
+              id="edit-stockable"
+              defaultChecked={item.is_stockable === 1} 
+              className="h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500 dark:border-zinc-600 dark:bg-zinc-800"
+            />
+            <label htmlFor="edit-stockable" className="text-sm font-medium dark:text-zinc-300">Controlar estoque deste produto?</label>
+          </div>
+
+          <div className="flex items-center gap-2 pl-6">
+            <input 
+              type="checkbox" 
+              name="is_solid" 
+              id="edit-solid"
+              defaultChecked={item.is_solid === 1} 
+              className="h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500 dark:border-zinc-600 dark:bg-zinc-800"
+            />
+            <label htmlFor="edit-solid" className="text-sm font-medium dark:text-zinc-300">Unidade sólida (contagem individual)</label>
+          </div>
         </div>
+
         <Button type="submit" className="w-full">Salvar Alterações</Button>
       </form>
     </Modal>
@@ -5124,7 +5785,9 @@ function AddMenuModal({ isOpen, onClose, onSave, categories = [], details = [] }
           price: parseFloat(formData.get('price') as string),
           type: formData.get('type'),
           category: formData.get('category'),
-          active: formData.get('active') === 'on' ? 1 : 0
+          active: formData.get('active') === 'on' ? 1 : 0,
+          is_stockable: formData.get('is_stockable') === 'on' ? 1 : 0,
+          is_solid: formData.get('is_solid') === 'on' ? 1 : 0
         });
         onClose();
       }} className="space-y-4">
@@ -5161,14 +5824,37 @@ function AddMenuModal({ isOpen, onClose, onSave, categories = [], details = [] }
             </select>
           </div>
         </div>
-        <div className="flex items-center gap-2 rounded-lg border border-zinc-200 p-3 dark:border-zinc-700">
-          <input 
-            type="checkbox" 
-            name="active" 
-            defaultChecked={true} 
-            className="h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500 dark:border-zinc-600 dark:bg-zinc-800"
-          />
-          <label className="text-sm font-medium dark:text-zinc-300">Item Ativo (Disponível para pedidos)</label>
+        <div className="space-y-3 pt-2 border-t border-zinc-100 dark:border-zinc-800">
+          <div className="flex items-center gap-2">
+            <input 
+              type="checkbox" 
+              name="active" 
+              id="add-active"
+              defaultChecked={true} 
+              className="h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500 dark:border-zinc-600 dark:bg-zinc-800"
+            />
+            <label htmlFor="add-active" className="text-sm font-medium dark:text-zinc-300">Item Ativo (Visível no cardápio)</label>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <input 
+              type="checkbox" 
+              name="is_stockable" 
+              id="add-stockable"
+              className="h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500 dark:border-zinc-600 dark:bg-zinc-800"
+            />
+            <label htmlFor="add-stockable" className="text-sm font-medium dark:text-zinc-300">Controlar estoque deste produto?</label>
+          </div>
+
+          <div className="flex items-center gap-2 pl-6">
+            <input 
+              type="checkbox" 
+              name="is_solid" 
+              id="add-solid"
+              className="h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500 dark:border-zinc-600 dark:bg-zinc-800"
+            />
+            <label htmlFor="add-solid" className="text-sm font-medium dark:text-zinc-300">Unidade sólida (contagem individual)</label>
+          </div>
         </div>
         <Button type="submit" className="w-full">Salvar Produto</Button>
       </form>
@@ -5176,7 +5862,7 @@ function AddMenuModal({ isOpen, onClose, onSave, categories = [], details = [] }
   );
 }
 
-function OrderModal({ isOpen, onClose, menu, categories = [], details = [], onSend, vibrate }: any) {
+function OrderModal({ isOpen, onClose, menu, categories = [], details = [], onSend, vibrate, isDirectCheckout = false }: any) {
   const [cart, setCart] = useState<any[]>([]);
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
@@ -5334,7 +6020,7 @@ function OrderModal({ isOpen, onClose, menu, categories = [], details = [], onSe
                 >
                   <div className="text-left">
                     <p className="text-sm font-bold dark:text-zinc-100">{item.name}</p>
-                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">{item.type} • {item.category} • R$ {item.price.toFixed(2)}</p>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5">{item.type} • {item.category} • {formatCurrency(item.price)}</p>
                   </div>
                   <div className="h-8 w-8 rounded-full bg-emerald-50 dark:bg-emerald-900/30 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
                     <Plus className="h-4 w-4" />
@@ -5397,7 +6083,7 @@ function OrderModal({ isOpen, onClose, menu, categories = [], details = [], onSe
                           >
                             <div className="text-left">
                               <p className="text-sm font-bold dark:text-zinc-100">{item.name}</p>
-                              <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400 mt-1">R$ {item.price.toFixed(2)}</p>
+                              <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400 mt-1">{formatCurrency(item.price)}</p>
                             </div>
                             <div className="h-8 w-8 rounded-full bg-emerald-50 dark:bg-emerald-900/30 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
                               <Plus className="h-4 w-4" />
@@ -5532,13 +6218,13 @@ function OrderModal({ isOpen, onClose, menu, categories = [], details = [], onSe
               {[...cart].reverse().map(item => (
                 <div key={item.id} className="p-3 text-sm flex justify-between">
                   <span>{item.quantity}x {item.name}</span>
-                  <span className="text-zinc-500 font-medium">R$ {(item.price * item.quantity).toFixed(2)}</span>
+                  <span className="text-zinc-500 font-medium">{formatCurrency(item.price * item.quantity)}</span>
                 </div>
               ))}
             </div>
             <div className="flex justify-between items-center text-lg font-bold border-t pt-4 px-2">
               <span>TOTAL</span>
-              <span className="text-emerald-600">R$ {cart.reduce((acc, i) => acc + (i.price * i.quantity), 0).toFixed(2)}</span>
+              <span className="text-emerald-600">{formatCurrency(cart.reduce((acc, i) => acc + (i.price * i.quantity), 0))}</span>
             </div>
           </div>
           <div className="flex justify-end gap-3">
@@ -5784,7 +6470,7 @@ function AccountsPayableSection({ accountsPayable, sendWS, cashierStatus, curren
                       <p className="font-bold text-zinc-900 dark:text-zinc-100">{account.description}</p>
                       <p className="text-xs text-zinc-500">{account.category}</p>
                     </div>
-                    <p className="font-black text-rose-600">R$ {account.amount.toFixed(2)}</p>
+                    <p className="font-black text-rose-600">{formatCurrency(account.amount)}</p>
                   </div>
                   <div className="flex items-center justify-between pt-2 border-t border-zinc-50 dark:border-zinc-800">
                     <p className="text-xs text-zinc-500">Vencimento: {format(new Date(account.due_date), 'dd/MM/yyyy')}</p>
@@ -5804,7 +6490,7 @@ function AccountsPayableSection({ accountsPayable, sendWS, cashierStatus, curren
                         variant="outline" 
                         className="h-8 text-xs gap-1"
                         onClick={() => {
-                          if (confirm(`Confirmar pagamento de R$ ${account.amount.toFixed(2)}?`)) {
+                          if (confirm(`Confirmar pagamento de ${formatCurrency(account.amount)}?`)) {
                             sendWS('ACCOUNTS_PAYABLE_PAY', { 
                               id: account.id, 
                               sessionId: cashierStatus.status === 'open' ? cashierStatus.sessionId : null,
@@ -5840,7 +6526,7 @@ function AccountsPayableSection({ accountsPayable, sendWS, cashierStatus, curren
                   <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">{account.description}</p>
                   <p className="text-[10px] text-zinc-500">Pago em: {format(new Date(account.timestamp), 'dd/MM/yyyy')}</p>
                 </div>
-                <p className="text-sm font-bold text-zinc-500">R$ {account.amount.toFixed(2)}</p>
+                <p className="text-sm font-bold text-zinc-500">{formatCurrency(account.amount)}</p>
               </div>
             ))}
             {paidAccounts.length > 5 && (
@@ -5920,6 +6606,7 @@ function FinanceSection({ currentUser, cashierStatus, cashierTransactions = [], 
   const [transactionType, setTransactionType] = useState<'income' | 'expense'>('expense');
   const [showDetails, setShowDetails] = useState(false);
   const [isClosingModalOpen, setIsClosingModalOpen] = useState(false);
+  const [editingTransaction, setEditingTransaction] = useState<any>(null);
 
   const handleOpenCashier = (e: React.FormEvent) => {
     e.preventDefault();
@@ -6042,15 +6729,15 @@ function FinanceSection({ currentUser, cashierStatus, cashierTransactions = [], 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="rounded-xl border border-zinc-200 p-4 bg-white dark:bg-zinc-900 dark:border-zinc-800">
               <h4 className="text-xs font-medium text-zinc-500 mb-1">Saldo Inicial</h4>
-              <p className="text-xl font-bold text-zinc-900 dark:text-zinc-100">R$ {cashierStatus.initialBalance?.toFixed(2)}</p>
+              <p className="text-xl font-bold text-zinc-900 dark:text-zinc-100">{formatCurrency(cashierStatus.initialBalance || 0)}</p>
             </div>
             <div className="rounded-xl border border-zinc-200 p-4 bg-white dark:bg-zinc-900 dark:border-zinc-800">
               <h4 className="text-xs font-medium text-zinc-500 mb-1">Entradas (Vendas)</h4>
-              <p className="text-xl font-bold text-emerald-600">R$ {summary.income.toFixed(2)}</p>
+              <p className="text-xl font-bold text-emerald-600">{formatCurrency(summary.income)}</p>
             </div>
             <div className="rounded-xl border border-zinc-200 p-4 bg-white dark:bg-zinc-900 dark:border-zinc-800">
               <h4 className="text-xs font-medium text-zinc-500 mb-1">Saídas (Sangrias)</h4>
-              <p className="text-xl font-bold text-rose-600">R$ {summary.expense.toFixed(2)}</p>
+              <p className="text-xl font-bold text-rose-600">{formatCurrency(summary.expense)}</p>
             </div>
           </div>
 
@@ -6062,7 +6749,7 @@ function FinanceSection({ currentUser, cashierStatus, cashierTransactions = [], 
               <div className="flex justify-between items-start">
                 <div>
                   <h4 className="text-sm font-medium opacity-80 mb-1 uppercase tracking-wider">Saldo Atual em Caixa</h4>
-                  <p className="text-5xl font-black tracking-tight">R$ {currentBalance.toFixed(2)}</p>
+                  <p className="text-5xl font-black tracking-tight">{formatCurrency(currentBalance)}</p>
                 </div>
                 <Button 
                   variant="outline" 
@@ -6184,15 +6871,26 @@ function FinanceSection({ currentUser, cashierStatus, cashierTransactions = [], 
                         <p className="text-[10px] text-zinc-500">{new Date(t.timestamp).toLocaleTimeString()} - {t.username}</p>
                       </div>
                     </div>
-                    <div className="text-right">
-                      <p className={cn(
-                        "text-sm font-bold",
-                        (t.type === 'sale' || t.type === 'income') ? "text-emerald-600" : "text-rose-600"
-                      )}>
-                        {(t.type === 'sale' || t.type === 'income') ? '+' : '-'} R$ {t.amount.toFixed(2)}
-                      </p>
-                      <p className="text-[10px] text-zinc-400 uppercase">{normalizeMethod(t.method)}</p>
-                    </div>
+            <div className="text-right flex items-center gap-3">
+              <div>
+                <p className={cn(
+                  "text-sm font-bold",
+                  (t.type === 'sale' || t.type === 'income') ? "text-emerald-600" : "text-rose-600"
+                )}>
+                  {(t.type === 'sale' || t.type === 'income') ? '+' : '-'} {formatCurrency(t.amount)}
+                </p>
+                <p className="text-[10px] text-zinc-400 uppercase">{normalizeMethod(t.method)}</p>
+              </div>
+              {hasPermission('edit_payment') && (
+                <button 
+                  onClick={() => setEditingTransaction(t)}
+                  className="p-1.5 text-zinc-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
+                  title="Editar pagamento"
+                >
+                  <Edit2 className="h-4 w-4" />
+                </button>
+              )}
+            </div>
                   </div>
                 ))
               )}
@@ -6200,6 +6898,56 @@ function FinanceSection({ currentUser, cashierStatus, cashierTransactions = [], 
           </div>
         </div>
       )}
+
+      {/* Modal de Edição de Transação */}
+      <Modal 
+        isOpen={!!editingTransaction} 
+        onClose={() => setEditingTransaction(null)}
+        title="Editar Transação"
+      >
+        {editingTransaction && (
+          <form onSubmit={(e) => {
+            e.preventDefault();
+            const formData = new FormData(e.currentTarget);
+            sendWS('CASHIER_TRANSACTION_UPDATE', {
+              transactionId: editingTransaction.id,
+              method: formData.get('method'),
+              amount: parseFloat(formData.get('amount') as string),
+              description: formData.get('description'),
+              userId: currentUser.id,
+              username: currentUser.username
+            });
+            setEditingTransaction(null);
+          }} className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Método de Pagamento</label>
+              <select 
+                name="method"
+                defaultValue={editingTransaction.method}
+                className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm dark:bg-zinc-950 dark:border-zinc-800"
+              >
+                <option value="dinheiro">Dinheiro</option>
+                <option value="pix">PIX</option>
+                <option value="cartao_debito">Cartão de Débito</option>
+                <option value="cartao_credito">Cartão de Crédito</option>
+                <option value="vale_refeicao">Vale Refeição</option>
+              </select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Valor</label>
+              <Input name="amount" type="number" step="0.01" defaultValue={editingTransaction.amount} required />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Descrição / Motivo</label>
+              <Input name="description" defaultValue={editingTransaction.description} required />
+            </div>
+            <div className="flex justify-end gap-3 pt-4">
+              <Button type="button" variant="outline" onClick={() => setEditingTransaction(null)}>Cancelar</Button>
+              <Button type="submit">Salvar Alterações</Button>
+            </div>
+          </form>
+        )}
+      </Modal>
 
       {/* Modal de Detalhes do Saldo */}
       <AnimatePresence>
@@ -6224,12 +6972,12 @@ function FinanceSection({ currentUser, cashierStatus, cashierTransactions = [], 
                     {['dinheiro', 'pix', 'débito', 'crédito'].map(method => (
                       <div key={method} className="flex justify-between items-center p-4 rounded-2xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-100 dark:border-zinc-800">
                         <span className="text-sm font-medium capitalize dark:text-zinc-300">{method}</span>
-                        <span className="font-bold text-emerald-600">R$ {(summary.byMethod[method] || 0).toFixed(2)}</span>
+                        <span className="font-bold text-emerald-600">{formatCurrency(summary.byMethod[method] || 0)}</span>
                       </div>
                     ))}
                     <div className="flex justify-between items-center p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-900/20 border-2 border-emerald-100 dark:border-emerald-800">
                       <span className="text-sm font-bold text-emerald-700 dark:text-emerald-300">Total de Entradas</span>
-                      <span className="font-black text-emerald-700 dark:text-emerald-300 text-lg">R$ {summary.income.toFixed(2)}</span>
+                      <span className="font-black text-emerald-700 dark:text-emerald-300 text-lg">{formatCurrency(summary.income)}</span>
                     </div>
                   </div>
                 </div>
@@ -6270,19 +7018,19 @@ function FinanceSection({ currentUser, cashierStatus, cashierTransactions = [], 
                     <div className="space-y-4">
                       <div className="flex justify-between items-center p-4 rounded-2xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-100 dark:border-zinc-800">
                         <span className="text-sm text-zinc-500">Saldo Inicial</span>
-                        <span className="font-bold dark:text-zinc-200">R$ {cashierStatus.initialBalance?.toFixed(2)}</span>
+                        <span className="font-bold dark:text-zinc-200">{formatCurrency(cashierStatus.initialBalance || 0)}</span>
                       </div>
                       <div className="flex justify-between items-center p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-900/10 border border-emerald-100 dark:border-emerald-800/30">
                         <span className="text-sm text-emerald-600 font-medium">Total de Entradas</span>
-                        <span className="font-bold text-emerald-600">+ R$ {summary.income.toFixed(2)}</span>
+                        <span className="font-bold text-emerald-600">+ {formatCurrency(summary.income)}</span>
                       </div>
                       <div className="flex justify-between items-center p-4 rounded-2xl bg-rose-50 dark:bg-rose-900/10 border border-rose-100 dark:border-rose-800/30">
                         <span className="text-sm text-rose-600 font-medium">Total de Saídas</span>
-                        <span className="font-bold text-rose-600">- R$ {summary.expense.toFixed(2)}</span>
+                        <span className="font-bold text-rose-600">- {formatCurrency(summary.expense)}</span>
                       </div>
                       <div className="flex justify-between items-center p-6 rounded-2xl bg-zinc-900 text-white shadow-xl">
                         <span className="font-bold opacity-80">SALDO FINAL</span>
-                        <span className="text-2xl font-black">R$ {currentBalance.toFixed(2)}</span>
+                        <span className="text-2xl font-black">{formatCurrency(currentBalance)}</span>
                       </div>
                     </div>
                   </div>
@@ -6293,7 +7041,7 @@ function FinanceSection({ currentUser, cashierStatus, cashierTransactions = [], 
                       {['dinheiro', 'pix', 'débito', 'crédito'].map(method => (
                         <div key={method} className="flex justify-between items-center p-3 rounded-xl border border-zinc-100 dark:border-zinc-800">
                           <span className="text-sm capitalize dark:text-zinc-400">{method}</span>
-                          <span className="font-bold dark:text-zinc-200">R$ {(summary.byMethod[method] || 0).toFixed(2)}</span>
+                          <span className="font-bold dark:text-zinc-200">{formatCurrency(summary.byMethod[method] || 0)}</span>
                         </div>
                       ))}
                     </div>

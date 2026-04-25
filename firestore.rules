@@ -80,7 +80,11 @@ service cloud.firestore {
              data.price is number && data.price >= 0 &&
              (data.type == null || (data.type is string && data.type.size() < 50)) &&
              (data.category == null || (data.category is string && data.category.size() < 50)) &&
-             data.active is number && data.active in [0, 1];
+             data.active is number && data.active in [0, 1] &&
+             (!('created_at' in data) || data.created_at is string) &&
+             (!('is_stockable' in data) || data.is_stockable in [0, 1]) &&
+             (!('is_solid' in data) || data.is_solid in [0, 1]) &&
+             (!('current_stock' in data) || data.current_stock is number);
     }
 
     function isValidCategory(data) {
@@ -121,6 +125,41 @@ service cloud.firestore {
     function isValidSetting(data) {
       return data.keys().hasAll(['value']) &&
              data.value is string && data.value.size() < 1000;
+    }
+
+    function isValidCashierSession(data) {
+      return data.keys().hasAll(['status', 'initial_balance', 'opened_by_name']) &&
+             data.status is string && data.status in ['open', 'closed'] &&
+             data.initial_balance is number && data.initial_balance >= 0 &&
+             data.opened_by_name is string &&
+             (!('opened_at' in data) || data.opened_at == null || data.opened_at is string) &&
+             (!('opened_by_id' in data) || data.opened_by_id == null || data.opened_by_id is string) &&
+             (!('closed_at' in data) || data.closed_at == null || data.closed_at is string) &&
+             (!('closed_by_id' in data) || data.closed_by_id == null || data.closed_by_id is string) &&
+             (!('closed_by_name' in data) || data.closed_by_name == null || data.closed_by_name is string) &&
+             (!('final_balance' in data) || data.final_balance == null || data.final_balance is number);
+    }
+
+    function isValidCashierTransaction(data) {
+      return data.keys().hasAll(['session_id', 'type', 'amount', 'timestamp']) &&
+             data.session_id is string &&
+             data.type is string && data.type in ['sale', 'income', 'expense'] &&
+             data.amount is number && data.amount >= 0 &&
+             data.timestamp is string &&
+             (!('description' in data) || data.description == null || data.description is string) &&
+             (!('method' in data) || data.method == null || data.method is string) &&
+             (!('user_id' in data) || data.user_id == null || data.user_id is string) &&
+             (!('username' in data) || data.username == null || data.username is string);
+    }
+
+    function isValidStockPurchase(data) {
+      return data.keys().hasAll(['menu_item_id', 'quantity', 'cost_price', 'timestamp', 'user_id', 'username']) &&
+             data.menu_item_id is string &&
+             data.quantity is number &&
+             data.cost_price is number &&
+             data.timestamp is string &&
+             data.user_id is string &&
+             data.username is string;
     }
 
     // ===============================================================
@@ -180,6 +219,27 @@ service cloud.firestore {
       allow read: if isStaff();
       allow create: if isAdmin() && (isServer() || isValidSetting(request.resource.data));
       allow update: if isAdmin() && (isServer() || isValidSetting(request.resource.data));
+      allow delete: if isAdmin();
+    }
+
+    match /cashier_sessions/{sessionId} {
+      allow read: if isStaff();
+      allow create: if isWaiterOrAdmin() && (isServer() || isValidCashierSession(request.resource.data));
+      allow update: if isWaiterOrAdmin() && (isServer() || isValidCashierSession(request.resource.data));
+      allow delete: if isAdmin();
+    }
+
+    match /cashier_transactions/{transactionId} {
+      allow read: if isStaff();
+      allow create: if isWaiterOrAdmin() && (isServer() || isValidCashierTransaction(request.resource.data));
+      allow update: if isWaiterOrAdmin() && (isServer() || isValidCashierTransaction(request.resource.data));
+      allow delete: if isAdmin();
+    }
+
+    match /stock_purchases/{purchaseId} {
+      allow read: if isStaff();
+      allow create: if isWaiterOrAdmin() && (isServer() || isValidStockPurchase(request.resource.data));
+      allow update: if isAdmin();
       allow delete: if isAdmin();
     }
   }

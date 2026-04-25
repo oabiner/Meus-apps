@@ -26,6 +26,10 @@ export interface MenuItem {
   type: string; // e.g., 'comida', 'bebida'
   category: string; // e.g., 'porção', 'refrigerante'
   active?: number; // 1 for active, 0 for inactive
+  created_at?: string;
+  is_stockable?: number; // 0 or 1
+  is_solid?: number; // 0 or 1
+  current_stock?: number;
 }
 
 export interface OrderItem {
@@ -41,6 +45,16 @@ export interface OrderItem {
   item_price?: number;
   category?: string;
   group?: string;
+}
+
+export interface StockPurchase {
+  id: string;
+  menu_item_id: string;
+  quantity: number;
+  cost_price: number;
+  timestamp: string;
+  user_id: string;
+  username: string;
 }
 
 export interface HistoryEvent {
@@ -89,5 +103,9 @@ export type WSEvent =
   | { type: 'CASHIER_TRANSACTIONS'; payload: any[] }
   | { type: 'ACCOUNTS_PAYABLE_SYNC'; payload: any[] }
   | { type: 'TASKS_SYNC'; payload: any[] }
+  | { type: 'BALCAO_CHECKOUT_TRIGGER'; payload: any }
+  | { type: 'BALCAO_DIRECT_SALE_SUCCESS'; payload: { userId: string } }
   | { type: 'HISTORY_ALL_DATA'; payload: HistoryEvent[] }
-  | { type: 'PRINT_COMMAND'; payload: any };
+  | { type: 'PRINT_COMMAND'; payload: any }
+  | { type: 'STOCK_SYNC'; payload: StockPurchase[] }
+  | { type: 'PURCHASE_ADD'; payload: StockPurchase };

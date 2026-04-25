@@ -33,9 +33,27 @@
         "price": { "type": "number", "description": "Item price" },
         "type": { "type": "string", "description": "Item type/category" },
         "category": { "type": "string", "description": "Item sub-category" },
-        "active": { "type": "integer", "enum": [0, 1], "description": "Whether the item is active" }
+        "active": { "type": "integer", "enum": [0, 1], "description": "Whether the item is active" },
+        "created_at": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
+        "is_stockable": { "type": "integer", "enum": [0, 1], "description": "Whether stock is controlled" },
+        "is_solid": { "type": "integer", "enum": [0, 1], "description": "Whether it is a solid unit" },
+        "current_stock": { "type": "number", "description": "Current stock quantity" }
       },
       "required": ["name", "price", "active"]
+    },
+    "stock_purchases": {
+      "title": "Stock Purchase",
+      "description": "Inventory entry records",
+      "type": "object",
+      "properties": {
+        "menu_item_id": { "type": "string", "description": "Related menu item ID" },
+        "quantity": { "type": "number", "description": "Quantity purchased" },
+        "cost_price": { "type": "number", "description": "Purchase cost per unit" },
+        "timestamp": { "type": "string", "format": "date-time", "description": "Purchase timestamp" },
+        "user_id": { "type": "string", "description": "User ID who registered the purchase" },
+        "username": { "type": "string", "description": "Username who registered the purchase" }
+      },
+      "required": ["menu_item_id", "quantity", "cost_price", "timestamp", "user_id", "username"]
     },
     "categories": {
       "title": "Category",
@@ -96,6 +114,39 @@
         "value": { "type": "string", "description": "Setting value" }
       },
       "required": ["value"]
+    },
+    "cashier_sessions": {
+      "title": "Cashier Session",
+      "description": "Cashier open/close sessions",
+      "type": "object",
+      "properties": {
+        "opened_at": { "type": ["string", "null"], "format": "date-time" },
+        "closed_at": { "type": ["string", "null"], "format": "date-time" },
+        "opened_by_id": { "type": ["string", "null"] },
+        "opened_by_name": { "type": "string" },
+        "closed_by_id": { "type": ["string", "null"] },
+        "closed_by_name": { "type": ["string", "null"] },
+        "initial_balance": { "type": "number" },
+        "final_balance": { "type": ["number", "null"] },
+        "status": { "type": "string", "enum": ["open", "closed"] }
+      },
+      "required": ["status", "initial_balance", "opened_by_name"]
+    },
+    "cashier_transactions": {
+      "title": "Cashier Transaction",
+      "description": "Movements inside a cashier session",
+      "type": "object",
+      "properties": {
+        "session_id": { "type": "string" },
+        "type": { "type": "string", "enum": ["sale", "income", "expense"] },
+        "amount": { "type": "number" },
+        "description": { "type": ["string", "null"] },
+        "method": { "type": ["string", "null"] },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "user_id": { "type": ["string", "null"] },
+        "username": { "type": ["string", "null"] }
+      },
+      "required": ["session_id", "type", "amount", "timestamp"]
     }
   },
   "firestore": {
@@ -106,6 +157,9 @@
     "/item_groups/{groupId}": { "schema": "item_groups", "description": "Menu item groups" },
     "/orders/{orderId}": { "schema": "orders", "description": "Active orders" },
     "/history/{historyId}": { "schema": "history", "description": "History log" },
-    "/settings/{settingId}": { "schema": "settings", "description": "App settings" }
+    "/settings/{settingId}": { "schema": "settings", "description": "App settings" },
+    "/cashier_sessions/{sessionId}": { "schema": "cashier_sessions", "description": "Cashier open/close sessions" },
+    "/cashier_transactions/{transactionId}": { "schema": "cashier_transactions", "description": "Cashier movements" },
+    "/stock_purchases/{purchaseId}": { "schema": "stock_purchases", "description": "Stock purchase entries" }
   }
 }
