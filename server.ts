@@ -6,8 +6,8 @@ import { v4 as uuidv4 } from "uuid";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
-import { db as firestoreDb, auth as firestoreAuth } from "./firebase";
-import { collection, getDocs, getDoc, doc, setDoc, deleteDoc, query, where, limit, writeBatch, onSnapshot } from "firebase/firestore";
+import { db as firestoreDb, auth as firestoreAuth } from "./firebase.ts";
+import { collection, getDocs, getDoc, doc, setDoc, deleteDoc, query, where, limit, writeBatch, onSnapshot, getDocFromServer } from "firebase/firestore";
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged } from "firebase/auth";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -579,8 +579,9 @@ async function loadFromFirestore(hostId: string) {
       }
     }
 
-    // History (Only last 100)
-    const historySnapshot = await getDocs(collection(firestoreDb, "history")).catch(e => handleFirestoreError(e, OperationType.GET, "history"));
+    // History (Only last 100 to save on reads)
+    const historyQuery = query(collection(firestoreDb, "history"), limit(100));
+    const historySnapshot = await getDocs(historyQuery).catch(e => handleFirestoreError(e, OperationType.GET, "history"));
     if (historySnapshot && !historySnapshot.empty) {
       const insertHistory = db.prepare("INSERT OR REPLACE INTO history (id, user_id, username, action, details, order_id, item_group, table_id, request_id, is_read, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
       historySnapshot.forEach(doc => {
@@ -589,8 +590,9 @@ async function loadFromFirestore(hostId: string) {
       });
     }
 
-    // Orders
-    const ordersSnapshot = await getDocs(collection(firestoreDb, "orders")).catch(e => handleFirestoreError(e, OperationType.GET, "orders"));
+    // Orders (Only recent ones to save on reads)
+    const ordersQuery = query(collection(firestoreDb, "orders"), limit(200));
+    const ordersSnapshot = await getDocs(ordersQuery).catch(e => handleFirestoreError(e, OperationType.GET, "orders"));
     if (ordersSnapshot && !ordersSnapshot.empty) {
       const insertOrder = db.prepare("INSERT OR REPLACE INTO orders (id, table_id, menu_item_id, quantity, status, is_read, observation, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
       ordersSnapshot.forEach(doc => {
@@ -744,6 +746,15 @@ async function startServer() {
   const hostUser = db.prepare("SELECT * FROM users WHERE username = ?").get("deckserrinha") as any;
   const hostId = hostUser?.id || "deckserrinha";
 
+  // Test Firestore connection
+  try {
+    console.log("Testing Firestore connection...");
+    await getDocFromServer(doc(firestoreDb, 'test', 'connection'));
+    console.log("Firestore connection test successful.");
+  } catch (error) {
+    console.error("Firestore connection test failed. This might be due to missing rules or network issues.", error);
+  }
+
   // IMPORTANT: Initialize sync IN PARALLEL or non-blocking to allow port binding
   // But we want it started before or during port binding
   const syncPromise = loadFromFirestore(hostId).catch(err => {
@@ -755,10 +766,12 @@ async function startServer() {
   // Handle upgrade for WebSocket
   // Note: We'll attach this after listen
 
-  // Periodic sync from Firestore every 60 minutes (reduced frequency to save on costs)
+  // Periodic sync from Firestore every 3 hours (increased interval to save on Spark plan reads)
   setInterval(async () => {
     console.log("Periodic Firestore sync starting...");
     try {
+      // For periodic sync, we only really need to sync static-ish data
+      // tables, orders, and history already have real-time listeners.
       await loadFromFirestore(hostId);
       
       // Broadcast updates only if necessary, binned together
@@ -773,7 +786,7 @@ async function startServer() {
     } catch (err) {
       console.error("Periodic sync failed:", err);
     }
-  }, 60 * 60 * 1000);
+  }, 3 * 60 * 60 * 1000);
 
   const clients = new Map<WebSocket, { userId?: string, username?: string, role?: string }>();
 

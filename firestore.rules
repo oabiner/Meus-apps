@@ -162,85 +162,107 @@ service cloud.firestore {
              data.username is string;
     }
 
+    function isValidPayable(data) {
+      return data.keys().hasAll(['description', 'amount', 'due_date', 'status']) &&
+             data.description is string &&
+             data.amount is number &&
+             data.due_date is string &&
+             data.status in ['pending', 'paid', 'overdue'] &&
+             (!('paid_at' in data) || data.paid_at == null || data.paid_at is string) &&
+             (!('method' in data) || data.method == null || data.method is string) &&
+             (!('category' in data) || data.category == null || data.category is string) &&
+             (!('recurring' in data) || data.recurring == null || data.recurring is number) &&
+             (!('user_id' in data) || data.user_id == null || data.user_id is string) &&
+             (!('username' in data) || data.username == null || data.username is string) &&
+             (!('timestamp' in data) || data.timestamp == null || data.timestamp is number);
+    }
+
     // ===============================================================
     // Rules
     // ===============================================================
 
     match /users/{userId} {
       allow read: if isStaff();
-      allow create: if isAdmin() && (isServer() || isValidUser(request.resource.data));
-      allow update: if isAdmin() && (isServer() || isValidUser(request.resource.data));
-      allow delete: if isAdmin();
+      allow create: if (isAdmin() || isServer()) && (isServer() || isValidUser(request.resource.data));
+      allow update: if (isAdmin() || isServer()) && (isServer() || isValidUser(request.resource.data));
+      allow delete: if isAdmin() || isServer();
     }
 
     match /tables/{tableId} {
       allow read: if isStaff();
-      allow create: if isAdmin() && (isServer() || isValidTable(request.resource.data));
-      allow update: if isWaiterOrAdmin() && (isServer() || isValidTable(request.resource.data));
-      allow delete: if isAdmin();
+      allow create: if (isAdmin() || isServer()) && (isServer() || isValidTable(request.resource.data));
+      allow update: if (isWaiterOrAdmin() || isServer()) && (isServer() || isValidTable(request.resource.data));
+      allow delete: if isAdmin() || isServer();
     }
 
     match /menu_items/{menuItemId} {
       allow read: if isStaff();
-      allow create: if isAdmin() && (isServer() || isValidMenuItem(request.resource.data));
-      allow update: if isAdmin() && (isServer() || isValidMenuItem(request.resource.data));
-      allow delete: if isAdmin();
+      allow create: if (isAdmin() || isServer()) && (isServer() || isValidMenuItem(request.resource.data));
+      allow update: if (isAdmin() || isServer()) && (isServer() || isValidMenuItem(request.resource.data));
+      allow delete: if isAdmin() || isServer();
     }
 
     match /categories/{categoryId} {
       allow read: if isStaff();
-      allow create: if isAdmin() && (isServer() || isValidCategory(request.resource.data));
-      allow update: if isAdmin() && (isServer() || isValidCategory(request.resource.data));
-      allow delete: if isAdmin();
+      allow create: if (isAdmin() || isServer()) && (isServer() || isValidCategory(request.resource.data));
+      allow update: if (isAdmin() || isServer()) && (isServer() || isValidCategory(request.resource.data));
+      allow delete: if isAdmin() || isServer();
     }
 
     match /item_groups/{groupId} {
       allow read: if isStaff();
-      allow create: if isAdmin() && (isServer() || isValidDetail(request.resource.data));
-      allow update: if isAdmin() && (isServer() || isValidDetail(request.resource.data));
-      allow delete: if isAdmin();
+      allow create: if (isAdmin() || isServer()) && (isServer() || isValidDetail(request.resource.data));
+      allow update: if (isAdmin() || isServer()) && (isServer() || isValidDetail(request.resource.data));
+      allow delete: if isAdmin() || isServer();
     }
 
     match /orders/{orderId} {
       allow read: if isStaff();
-      allow create: if isWaiterOrAdmin() && (isServer() || isValidOrder(request.resource.data));
-      allow update: if isStaff() && (isServer() || isValidOrder(request.resource.data));
-      allow delete: if isWaiterOrAdmin();
+      allow create: if (isWaiterOrAdmin() || isServer()) && (isServer() || isValidOrder(request.resource.data));
+      allow update: if (isStaff() || isServer()) && (isServer() || isValidOrder(request.resource.data));
+      allow delete: if isWaiterOrAdmin() || isServer();
     }
 
     match /history/{historyId} {
       allow read: if isStaff();
-      allow create: if isStaff() && (isServer() || isValidHistoryEvent(request.resource.data));
-      allow update: if isStaff() && (isServer() || isValidHistoryEvent(request.resource.data));
-      allow delete: if isAdmin();
+      allow create: if (isStaff() || isServer()) && (isServer() || isValidHistoryEvent(request.resource.data));
+      allow update: if (isStaff() || isServer()) && (isServer() || isValidHistoryEvent(request.resource.data));
+      allow delete: if isAdmin() || isServer();
     }
 
     match /settings/{settingId} {
       allow read: if isStaff();
-      allow create: if isAdmin() && (isServer() || isValidSetting(request.resource.data));
-      allow update: if isAdmin() && (isServer() || isValidSetting(request.resource.data));
-      allow delete: if isAdmin();
+      allow create: if (isAdmin() || isServer()) && (isServer() || isValidSetting(request.resource.data));
+      allow update: if (isAdmin() || isServer()) && (isServer() || isValidSetting(request.resource.data));
+      allow delete: if isAdmin() || isServer();
     }
 
     match /cashier_sessions/{sessionId} {
       allow read: if isStaff();
-      allow create: if isWaiterOrAdmin() && (isServer() || isValidCashierSession(request.resource.data));
-      allow update: if isWaiterOrAdmin() && (isServer() || isValidCashierSession(request.resource.data));
-      allow delete: if isAdmin();
+      allow create: if (isWaiterOrAdmin() || isServer()) && (isServer() || isValidCashierSession(request.resource.data));
+      allow update: if (isWaiterOrAdmin() || isServer()) && (isServer() || isValidCashierSession(request.resource.data));
+      allow delete: if isAdmin() || isServer();
     }
 
     match /cashier_transactions/{transactionId} {
       allow read: if isStaff();
-      allow create: if isWaiterOrAdmin() && (isServer() || isValidCashierTransaction(request.resource.data));
-      allow update: if isWaiterOrAdmin() && (isServer() || isValidCashierTransaction(request.resource.data));
-      allow delete: if isAdmin();
+      allow create: if (isWaiterOrAdmin() || isServer()) && (isServer() || isValidCashierTransaction(request.resource.data));
+      allow update: if (isWaiterOrAdmin() || isServer()) && (isServer() || isValidCashierTransaction(request.resource.data));
+      allow delete: if isAdmin() || isServer();
     }
 
     match /stock_purchases/{purchaseId} {
       allow read: if isStaff();
-      allow create: if isWaiterOrAdmin() && (isServer() || isValidStockPurchase(request.resource.data));
-      allow update: if isAdmin();
-      allow delete: if isAdmin();
+      allow create: if (isWaiterOrAdmin() || isServer()) && (isServer() || isValidStockPurchase(request.resource.data));
+      allow update: if isAdmin() || isServer();
+      allow delete: if isAdmin() || isServer();
+    }
+
+    match /accounts_payable/{payableId} {
+      allow read: if isStaff();
+      allow create: if (isAdmin() || isServer()) && (isServer() || isValidPayable(request.resource.data));
+      allow update: if (isAdmin() || isServer()) && (isServer() || isValidPayable(request.resource.data));
+      allow delete: if isAdmin() || isServer();
     }
   }
 }
