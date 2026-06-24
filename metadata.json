@@ -1,0 +1,5 @@
+{
+  "name": "Deck Serrinha",
+  "description": "Sistema de gestão de restaurante com controle de mesas, cardápio, chat em tempo real e gerenciamento de usuários.",
+  "requestFramePermissions": []
+}
